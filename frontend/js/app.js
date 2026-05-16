@@ -314,8 +314,10 @@ const App = {
 
     profileField(label, value) {
         if (value === undefined || value === null || value === '') return '';
+        const isWide = String(label || '').toLowerCase().includes('address') || String(value || '').length > 42;
+        const className = isWide ? 'profile-field profile-field-wide' : 'profile-field';
         return `
-            <div class="profile-field">
+            <div class="${className}">
                 <span>${this.escapeHtml(label)}</span>
                 <strong>${this.escapeHtml(value)}</strong>
             </div>

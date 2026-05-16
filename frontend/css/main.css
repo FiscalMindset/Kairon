@@ -17,16 +17,18 @@ body {
         linear-gradient(135deg, rgba(16, 20, 24, 0.96), rgba(11, 49, 53, 0.92)),
         radial-gradient(circle at top left, rgba(15, 159, 142, 0.18), transparent 32%);
     color: var(--text-primary);
-    min-height: 100vh;
+    min-height: 100svh;
     display: flex;
     justify-content: center;
     align-items: center;
+    overflow-x: hidden;
 }
 
 #app {
     width: 100%;
-    max-width: 1180px;
-    height: 94vh;
+    max-width: min(1180px, 100vw);
+    height: min(94svh, 920px);
+    min-height: min(640px, 100svh);
     display: flex;
     flex-direction: column;
     padding: 1rem;
@@ -163,7 +165,7 @@ button:hover {
     flex: 1 1 auto;
     min-height: 0;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 360px;
+    grid-template-columns: minmax(0, 1fr) clamp(300px, 28vw, 360px);
 }
 
 .assistant-panel {
@@ -205,6 +207,8 @@ button:hover {
     margin-top: 0.25rem;
     color: var(--text-secondary);
     font-size: 0.9rem;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
 }
 
 .dashboard-scroll {
@@ -262,7 +266,7 @@ button:hover {
 
 .profile-grid {
     display: grid;
-    grid-template-columns: repeat(4, minmax(120px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
     gap: 0.65rem;
     margin-top: 0.8rem;
 }
@@ -279,6 +283,10 @@ button:hover {
 .profile-field {
     padding: 0.65rem;
     min-width: 0;
+}
+
+.profile-field-wide {
+    grid-column: span 2;
 }
 
 .profile-field span,
@@ -299,7 +307,7 @@ button:hover {
 
 .metrics-grid {
     display: grid;
-    grid-template-columns: repeat(4, minmax(130px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
     gap: 0.75rem;
     margin-bottom: 1rem;
 }
@@ -393,7 +401,7 @@ button:hover {
 .analysis-table {
     width: 100%;
     border-collapse: collapse;
-    min-width: 780px;
+    min-width: 720px;
     font-size: 0.86rem;
 }
 
@@ -550,14 +558,35 @@ button:hover {
     gap: 0.75rem;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1120px) {
+    .workspace-grid {
+        grid-template-columns: minmax(0, 1fr) 320px;
+    }
+
+    .chart-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 980px) {
+    body {
+        align-items: stretch;
+    }
+
     #app {
-        height: 100vh;
+        height: auto;
+        min-height: 100svh;
+        max-width: 100vw;
         padding: 0;
     }
 
     .glass-panel {
         border-radius: 0;
+    }
+
+    .chat-container {
+        min-height: 100svh;
+        overflow: visible;
     }
 
     .chat-header,
@@ -568,19 +597,147 @@ button:hover {
     }
 
     .workspace-grid {
-        grid-template-columns: 1fr;
-        grid-template-rows: minmax(56vh, 1fr) auto;
+        display: flex;
+        flex-direction: column;
     }
 
     .assistant-panel {
         border-left: 0;
         border-top: 1px solid var(--glass-border);
-        max-height: 38vh;
+        max-height: none;
     }
 
-    .profile-panel,
+    .dashboard-scroll {
+        overflow: visible;
+        padding: 1rem;
+    }
+
+    .chat-messages {
+        flex: 0 0 auto;
+        max-height: 32svh;
+    }
+
     .chart-grid,
     .portal-panel {
+        grid-template-columns: 1fr;
+    }
+
+    .profile-panel {
+        grid-template-columns: 76px minmax(0, 1fr);
+        align-items: flex-start;
+    }
+
+    .profile-grid,
+    .metrics-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .student-avatar-large {
+        width: 76px;
+        height: 76px;
+        flex-basis: 76px;
+    }
+
+    .portal-table-list {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 620px) {
+    .chat-header {
+        padding: 0.85rem;
+    }
+
+    .chat-header,
+    .profile-title-row,
+    .card-title-row {
+        flex-direction: column;
+    }
+
+    .student-heading {
+        align-items: flex-start;
+    }
+
+    .student-avatar {
+        width: 38px;
+        height: 38px;
+        flex-basis: 38px;
+    }
+
+    .student-avatar-large {
+        width: 68px;
+        height: 68px;
+        flex-basis: 68px;
+    }
+
+    .dashboard-scroll {
+        padding: 0.75rem;
+    }
+
+    .profile-panel {
+        grid-template-columns: 68px minmax(0, 1fr);
+        gap: 0.75rem;
+    }
+
+    .profile-grid,
+    .metrics-grid,
+    .portal-table-list {
+        gap: 0.5rem;
+    }
+
+    .profile-field,
+    .metric-card,
+    .analysis-card,
+    .portal-panel {
+        padding: 0.7rem;
+    }
+
+    .metric-card strong {
+        font-size: 1.12rem;
+    }
+
+    .filter-row {
+        width: 100%;
+    }
+
+    .filter-row input,
+    .filter-row select {
+        flex: 1 1 100%;
+        min-width: 0;
+        width: 100%;
+    }
+
+    .quick-actions {
+        flex-wrap: nowrap;
+        padding: 0.7rem 0.75rem;
+    }
+
+    .quick-chip {
+        padding: 0.5rem 0.75rem;
+    }
+
+    .chat-input-area {
+        padding: 0.75rem;
+        gap: 0.5rem;
+    }
+
+    .chat-input-area input {
+        padding: 0.8rem;
+    }
+
+    .chat-input-area button {
+        width: auto;
+        padding: 0.8rem 0.9rem;
+    }
+
+    .message {
+        max-width: 100%;
+        padding: 0.85rem;
+    }
+}
+
+@media (max-width: 430px) {
+    .profile-panel {
         grid-template-columns: 1fr;
     }
 
@@ -589,41 +746,14 @@ button:hover {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
-    .dashboard-scroll {
-        padding: 1rem;
-    }
-
-    .portal-table-list {
-        grid-template-columns: 1fr;
-    }
-}
-
-@media (max-width: 540px) {
-    .chat-header,
-    .profile-title-row,
-    .card-title-row {
-        flex-direction: column;
-    }
-
-    .profile-grid,
-    .metrics-grid {
-        grid-template-columns: 1fr;
-    }
-
-    .student-avatar-large {
-        width: 76px;
-        height: 76px;
-        flex-basis: 76px;
+    .profile-field-wide {
+        grid-column: 1 / -1;
     }
 }
 
 .chat-input-area input {
     flex: 1;
-}
-
-@keyframes fadeIn {
-    from { opacity: 0; transform: translateY(10px); }
-    to { opacity: 1; transform: translateY(0); }
+    min-width: 0;
 }
 
 .loader {
@@ -634,6 +764,11 @@ button:hover {
     border-top-color: white;
     animation: spin 1s ease-in-out infinite;
     margin: 0 auto;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes spin {
