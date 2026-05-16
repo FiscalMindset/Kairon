@@ -52,12 +52,6 @@ class ChatbotEngine:
         name = subject.get("subject") or code or "Subject"
         return f"{code} - {name}" if code and code != name else name
 
-    def _mask_identifier(self, value):
-        text = str(value or "").strip()
-        if len(text) <= 4:
-            return text or "Unknown"
-        return f"{text[:2]}...{text[-3:]}"
-
     def _status_word(self, subject):
         status = subject.get("status_75") or subject.get("status") or ""
         if status == "safe":
@@ -257,12 +251,56 @@ class ChatbotEngine:
         response = "**Student profile from attendance portal data**\n\n"
         response += f"- Name: **{student.get('name', 'Unknown')}**\n"
         if student.get("rollno"):
-            response += f"- Roll no: **{self._mask_identifier(student.get('rollno'))}**\n"
+            response += f"- Roll no: **{student.get('rollno')}**\n"
+        if student.get("student_id"):
+            response += f"- Student ID: **{student.get('student_id')}**\n"
         response += f"- Degree: **{student.get('degree', 'Unknown')}**\n"
         response += f"- Department: **{student.get('department', 'Unknown')}**\n"
         response += f"- Semester: **{source.get('semester') or student.get('semester', 'Unknown')}**\n"
         response += f"- Academic year: **{source.get('academic_year') or student.get('academic_year', 'Unknown')}**\n"
         response += f"- Portal photo: **{'available' if student.get('photo_available') else 'not cached'}**\n"
+
+        shown = {
+            "name",
+            "rollno",
+            "student_id",
+            "degree",
+            "department",
+            "semester",
+            "academic_year",
+            "photo_available",
+            "photo_data_url",
+        }
+        allowed_extra = {
+            "father_name",
+            "mother_name",
+            "date_of_birth",
+            "mobile",
+            "email",
+            "institute_email",
+            "personal_email",
+            "blood_group",
+            "batch",
+            "admission_year",
+            "admission_no",
+            "admission_type",
+            "category",
+            "gender",
+            "address",
+            "permanent_address",
+            "correspondence_address",
+            "guardian_name",
+            "father_mobile",
+            "mother_mobile",
+        }
+        extra_items = []
+        for key, value in student.items():
+            if key in shown or key not in allowed_extra or value in (None, ""):
+                continue
+            label = key.replace("_", " ").title()
+            extra_items.append(f"- {label}: **{value}**")
+        if extra_items:
+            response += "\nAdditional portal fields:\n" + "\n".join(extra_items[:12]) + "\n"
         return response
 
     def _website_report(self, payload):

@@ -544,6 +544,8 @@ class AttendanceScraper:
             
             self._ensure_activity_menu_loaded(page, debug_dir, attempt_no)
             portal_catalog = self._extract_portal_catalog(page)
+            detail_catalog = self._scrape_portal_detail_pages(page, debug_dir, attempt_no)
+            portal_catalog = self._merge_portal_catalogs(portal_catalog, detail_catalog)
             self._last_portal_catalog = portal_catalog
             self._write_debug_json(debug_dir, f"06_portal_catalog_attempt_{attempt_no}.json", portal_catalog)
 
@@ -1099,6 +1101,7 @@ class AttendanceScraper:
             "links": [],
             "data_surfaces": [],
             "student_profile": {},
+            "tables": [],
         }
         seen_sections = set()
         seen_links = set()
@@ -1119,14 +1122,8 @@ class AttendanceScraper:
                 if welcome_match and not catalog["student_profile"].get("name"):
                     catalog["student_profile"]["name"] = " ".join(welcome_match.group(1).split())
 
-                if not catalog["student_profile"].get("photo_available"):
-                    for image in soup.find_all("img"):
-                        width = image.get("width") or ""
-                        height = image.get("height") or ""
-                        classes = " ".join(image.get("class") or []).lower()
-                        if classes == "round" or (str(width).isdigit() and str(height).isdigit() and int(width) >= 40 and int(height) >= 40):
-                            catalog["student_profile"]["photo_available"] = True
-                            break
+                if not catalog["student_profile"].get("photo_available") and soup.select("img.round"):
+                    catalog["student_profile"]["photo_available"] = True
 
                 active_section = None
                 for node in soup.find_all(["b", "a"]):
@@ -1172,7 +1169,277 @@ class AttendanceScraper:
             if any(any(marker in link["text"].lower() for marker in markers) for link in catalog["links"]):
                 catalog["data_surfaces"].append(surface)
 
+        photo_data_url = self._capture_student_photo_data_url(page)
+        if photo_data_url:
+            catalog["student_profile"]["photo_available"] = True
+            catalog["student_profile"]["photo_data_url"] = photo_data_url
+
         return catalog
+
+    def _clean_text(self, text):
+        return " ".join(str(text or "").replace("\xa0", " ").split())
+
+    def _profile_key(self, label):
+        cleaned = self._clean_text(label)
+        key = re.sub(r"[^a-z0-9]+", "_", cleaned.lower()).strip("_")
+        known = {
+            "roll_no": "rollno",
+            "roll_number": "rollno",
+            "enrollment_no": "student_id",
+            "enrolment_no": "student_id",
+            "student_id": "student_id",
+            "studentid": "student_id",
+            "student_code": "student_id",
+            "name": "name",
+            "student_name": "name",
+            "degree": "degree",
+            "program": "degree",
+            "programme": "degree",
+            "course": "degree",
+            "branch": "department",
+            "department": "department",
+            "semester": "semester",
+            "sem": "semester",
+            "academic_year": "academic_year",
+            "father_name": "father_name",
+            "mother_name": "mother_name",
+            "date_of_birth": "date_of_birth",
+            "dob": "date_of_birth",
+            "mobile": "mobile",
+            "mobile_no": "mobile",
+            "email": "email",
+            "email_id": "email",
+            "institute_email": "institute_email",
+            "personal_email": "personal_email",
+            "blood_group": "blood_group",
+            "batch": "batch",
+            "admission_year": "admission_year",
+            "admission_no": "admission_no",
+            "admission_number": "admission_no",
+            "admission_type": "admission_type",
+            "category": "category",
+            "gender": "gender",
+            "sex": "gender",
+            "address": "address",
+            "permanent_address": "permanent_address",
+            "correspondence_address": "correspondence_address",
+            "guardian_name": "guardian_name",
+            "father_mobile": "father_mobile",
+            "mother_mobile": "mother_mobile",
+        }
+        return known.get(key, key)
+
+    def _extract_profile_fields_from_html(self, html_content):
+        soup = BeautifulSoup(html_content or "", "html.parser")
+        fields = {}
+        allowed_profile_keys = {
+            "name",
+            "rollno",
+            "student_id",
+            "degree",
+            "department",
+            "semester",
+            "academic_year",
+            "father_name",
+            "mother_name",
+            "date_of_birth",
+            "mobile",
+            "email",
+            "institute_email",
+            "personal_email",
+            "blood_group",
+            "batch",
+            "admission_year",
+            "admission_no",
+            "admission_type",
+            "category",
+            "gender",
+            "address",
+            "permanent_address",
+            "correspondence_address",
+            "guardian_name",
+            "father_mobile",
+            "mother_mobile",
+        }
+
+        def add_field(label, value):
+            label = self._clean_text(label).strip(" :")
+            value = self._clean_text(value).strip(" :")
+            if not label or not value or len(label) > 80 or len(value) > 200:
+                return
+            key = self._profile_key(label)
+            if not re.search(r"[A-Za-z]", label) or key not in allowed_profile_keys:
+                return
+            if key and key not in fields:
+                fields[key] = value
+
+        for row in soup.find_all("tr"):
+            cells = [self._clean_text(cell.get_text(" ", strip=True)) for cell in row.find_all(["th", "td"])]
+            cells = [cell for cell in cells if cell]
+            if len(cells) == 2:
+                add_field(cells[0], cells[1])
+            elif len(cells) >= 4:
+                for index in range(0, len(cells) - 1, 2):
+                    add_field(cells[index], cells[index + 1])
+
+        for line in soup.get_text("\n", strip=True).splitlines():
+            if ":" not in line:
+                continue
+            label, value = line.split(":", 1)
+            add_field(label, value)
+
+        return fields
+
+    def _extract_structured_tables_from_html(self, html_content, surface, title=None):
+        soup = BeautifulSoup(html_content or "", "html.parser")
+        tables = []
+        for table_index, table in enumerate(soup.find_all("table")):
+            rows = []
+            for row in table.find_all("tr"):
+                cells = [self._clean_text(cell.get_text(" ", strip=True)) for cell in row.find_all(["th", "td"])]
+                cells = [cell for cell in cells if cell]
+                if cells:
+                    rows.append(cells)
+            if not rows:
+                continue
+
+            table_title = title or surface.replace("_", " ").title()
+            if len(rows[0]) == 1 and len(rows) > 1:
+                table_title = rows[0][0]
+                rows = rows[1:]
+
+            columns = rows[0]
+            body_rows = rows[1:]
+            if len(columns) < 2 and body_rows:
+                columns = [f"Column {idx + 1}" for idx in range(max(len(row) for row in body_rows))]
+            elif not body_rows and len(columns) >= 2:
+                body_rows = [columns]
+                columns = [f"Column {idx + 1}" for idx in range(len(body_rows[0]))]
+
+            if not body_rows:
+                continue
+
+            normalized_rows = []
+            for row in body_rows[:120]:
+                normalized = list(row[:len(columns)])
+                while len(normalized) < len(columns):
+                    normalized.append("")
+                normalized_rows.append(normalized)
+
+            tables.append({
+                "surface": surface,
+                "title": table_title,
+                "columns": columns[:24],
+                "rows": normalized_rows,
+                "row_count": len(body_rows),
+            })
+        return tables
+
+    def _capture_student_photo_data_url(self, page):
+        selectors = [
+            "img.round",
+            "img[src*='student']",
+            "img[src*='photo']",
+            "img[src*='profile']",
+        ]
+        for frame in page.frames:
+            for selector in selectors:
+                try:
+                    locator = frame.locator(selector)
+                    if locator.count() == 0:
+                        continue
+                    image_bytes = locator.first.screenshot(timeout=2000)
+                    if not image_bytes:
+                        continue
+                    return "data:image/png;base64," + base64.b64encode(image_bytes).decode("utf-8")
+                except:
+                    continue
+        return None
+
+    def _merge_portal_catalogs(self, base_catalog, extra_catalog):
+        base_catalog = base_catalog or {}
+        extra_catalog = extra_catalog or {}
+        merged = {
+            "sections": list(base_catalog.get("sections") or []),
+            "links": list(base_catalog.get("links") or []),
+            "data_surfaces": list(base_catalog.get("data_surfaces") or []),
+            "student_profile": dict(base_catalog.get("student_profile") or {}),
+            "tables": list(base_catalog.get("tables") or []),
+        }
+
+        for section in extra_catalog.get("sections") or []:
+            if section not in merged["sections"]:
+                merged["sections"].append(section)
+
+        seen_links = {(link.get("section"), link.get("text")) for link in merged["links"]}
+        for link in extra_catalog.get("links") or []:
+            key = (link.get("section"), link.get("text"))
+            if key not in seen_links:
+                seen_links.add(key)
+                merged["links"].append(link)
+
+        for surface in extra_catalog.get("data_surfaces") or []:
+            if surface not in merged["data_surfaces"]:
+                merged["data_surfaces"].append(surface)
+
+        merged["student_profile"].update({
+            key: value
+            for key, value in (extra_catalog.get("student_profile") or {}).items()
+            if value
+        })
+        merged["tables"].extend(extra_catalog.get("tables") or [])
+        return merged
+
+    def _scrape_portal_detail_pages(self, page, debug_dir, attempt_no):
+        """Best-effort scrape of authenticated profile/course/timetable pages."""
+        detail_catalog = {
+            "sections": [],
+            "links": [],
+            "data_surfaces": [],
+            "student_profile": {},
+            "tables": [],
+        }
+        page_specs = [
+            ("ID Card Details", "profile"),
+            ("Current Sem Courses Registered.", "registered_courses"),
+            ("My Timetable", "timetable"),
+        ]
+
+        for link_text, surface in page_specs:
+            try:
+                link_info = self._find_portal_link_by_text(page, link_text, max_attempts=2)
+                if not link_info:
+                    continue
+                self._open_portal_link(page, link_info)
+                target_frame = self._find_frame_by_name(page, link_info.get("target") or "data")
+                if not target_frame:
+                    continue
+                try:
+                    target_frame.wait_for_load_state("domcontentloaded", timeout=5000)
+                except:
+                    pass
+                html_content = target_frame.content()
+                safe_surface = re.sub(r"[^a-z0-9_]+", "_", surface.lower()).strip("_")
+                self._write_debug_text(debug_dir, f"06_portal_{safe_surface}_attempt_{attempt_no}.html", html_content)
+                detail_catalog["student_profile"].update(self._extract_profile_fields_from_html(html_content))
+                detail_catalog["tables"].extend(
+                    self._extract_structured_tables_from_html(
+                        html_content,
+                        surface=surface,
+                        title=link_text,
+                    )
+                )
+                if surface not in detail_catalog["data_surfaces"]:
+                    detail_catalog["data_surfaces"].append(surface)
+            except Exception as e:
+                safe_surface = re.sub(r"[^a-z0-9_]+", "_", surface.lower()).strip("_")
+                self._write_debug_text(debug_dir, f"06_portal_{safe_surface}_error_attempt_{attempt_no}.txt", str(e))
+
+        photo_data_url = self._capture_student_photo_data_url(page)
+        if photo_data_url:
+            detail_catalog["student_profile"]["photo_available"] = True
+            detail_catalog["student_profile"]["photo_data_url"] = photo_data_url
+        return detail_catalog
 
     def _click_portal_anchor(self, frame, link_info):
         """Click a portal anchor from inside its own frame so target/referrer are preserved."""
