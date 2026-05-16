@@ -535,7 +535,7 @@ const App = {
                 const cacheNote = data.cache_needs_refresh
                     ? "\n\n**Cache note:** this is an older totals-only cache. Type **TOTAL**, **SAFE**, or **RISK** now, but login once with CAPTCHA to rebuild the v2 cache for absent dates, profile, calendar marks, and portal data surfaces."
                     : "";
-                this.addBotMessage("Welcome back! I've loaded your attendance from the local cache." + cacheNote + "\n\nType **HI** for a summary, **CODES** for shortcuts, or **SW** for subject-wise details.");
+                this.addBotMessage("Welcome back! I've loaded your attendance from the local cache." + cacheNote + "\n\nType **HI** for a summary, **PLAN** for attendance priorities, **CODES** for shortcuts, or **SW** for subject-wise details.");
             } else {
                 this.renderLogin(rollno);
             }
@@ -691,7 +691,7 @@ const App = {
                 const warning = data.live_sync_warning
                     ? `\n\n**Live sync note:** ${data.live_sync_warning}. Debug folder: ${data.debug_dir || 'not available'}`
                     : "";
-                this.addBotMessage(data.message + warning + "\n\nType **HI** for the full dashboard, **PROFILE** for student info, **CODES** for shortcuts, or ask a subject code like **MEMEC303**.");
+                this.addBotMessage(data.message + warning + "\n\nType **HI** for the full dashboard, **PLAN** for attendance priorities, **PROFILE** for student info, **CODES** for shortcuts, or ask a subject code like **MEMEC303**.");
             } else {
                 btn.innerHTML = 'Verify & Deep Scrape';
                 if (data.retryable && data.captcha_base64) {
@@ -723,7 +723,7 @@ const App = {
                        const warning = data.live_sync_warning
                            ? `\n\n**Live sync note:** ${data.live_sync_warning}. Debug folder: ${data.debug_dir || 'not available'}`
                            : "";
-                       this.addBotMessage("CAPTCHA auto-read with OCR. " + data.message + warning + "\n\nType **HI** for the full dashboard or **CODES** for shortcuts.");
+                       this.addBotMessage("CAPTCHA auto-read with OCR. " + data.message + warning + "\n\nType **HI** for the full dashboard, **PLAN** for priorities, or **CODES** for shortcuts.");
                    } else {
                        btn.innerHTML = originalText;
                        btn.disabled = false;
@@ -779,11 +779,13 @@ const App = {
                             <button class="quick-chip" data-message="ABSENT">ABSENT</button>
                             <button class="quick-chip" data-message="SAFE">SAFE</button>
                             <button class="quick-chip" data-message="RISK">RISK</button>
+                            <button class="quick-chip" data-message="PLAN">PLAN</button>
                             <button class="quick-chip" data-message="PROFILE">PROFILE</button>
+                            <button class="quick-chip" data-message="SEMESTERS">SEMESTERS</button>
                             <button class="quick-chip" data-message="CODES">CODES</button>
                         </div>
                         <div class="chat-input-area">
-                            <input type="text" id="chatInput" placeholder="Ask about total, absent dates, safe subjects, profile...">
+                            <input type="text" id="chatInput" placeholder="Ask about plan, total, absences, semesters, profile...">
                             <button id="sendBtn">Send</button>
                         </div>
                     </section>

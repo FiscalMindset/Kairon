@@ -312,6 +312,93 @@ class ChatbotEngine:
             )
         return response
 
+    def _classes_needed_for_target(self, attended, total, target):
+        attended = int(attended or 0)
+        total = int(total or 0)
+        if total <= 0:
+            return 0
+        needed = 0
+        while total + needed > 0 and ((attended + needed) / (total + needed) * 100) < target:
+            needed += 1
+        return needed
+
+    def _percentage_after_miss(self, subject, missed=1):
+        attended = int(subject.get("attended") or 0)
+        total = int(subject.get("total") or 0)
+        missed = max(int(missed or 1), 1)
+        return round((attended / (total + missed) * 100), 2) if total + missed else 0
+
+    def _plan_report(self, payload):
+        subjects = self._subjects(payload)
+        if not subjects:
+            return "No attendance subjects are available yet. Login once so I can build a planning report."
+
+        sorted_subjects = sorted(subjects, key=lambda item: item.get("percentage", 0))
+        response = "**Attendance action plan**\n\n"
+        response += "Priority is based on current percentage, 75% buffer, and what happens after one more missed class.\n\n"
+        response += "| Priority | Subject | Now | If miss 1 | Action |\n"
+        response += "|---:|:---|---:|---:|:---|\n"
+
+        for index, subject in enumerate(sorted_subjects[:8], start=1):
+            percentage = float(subject.get("percentage") or 0)
+            after_miss = self._percentage_after_miss(subject)
+            if percentage < 75:
+                action = f"Attend {self._classes_needed_for_target(subject.get('attended'), subject.get('total'), 75)} to cross 75%"
+            elif after_miss < 75:
+                action = "Do not miss next class"
+            elif subject.get("skippable_75", 0) > 0:
+                action = f"Buffer {subject.get('skippable_75', 0)} skip(s)"
+            else:
+                action = "Attend next class to build buffer"
+
+            response += (
+                f"| {index} | {self._subject_label(subject)} | "
+                f"{percentage}% | {after_miss}% | {action} |\n"
+            )
+
+        response += "\n**Best move:** "
+        weakest = sorted_subjects[0]
+        if weakest.get("percentage", 0) < 75:
+            response += f"focus on **{self._subject_label(weakest)}** until it crosses 75%."
+        elif self._percentage_after_miss(weakest) < 75:
+            response += f"avoid missing **{self._subject_label(weakest)}** next; it will fall below 75%."
+        else:
+            response += f"protect **{self._subject_label(weakest)}** first, then use **SAFE** before skipping anything."
+        return response
+
+    def _semester_report(self, payload):
+        source = payload.get("source") or {}
+        subjects = self._subjects(payload)
+        synced = source.get("synced_filters") or []
+        available = source.get("available_semesters") or []
+
+        by_semester = {}
+        for subject in subjects:
+            semester = str(subject.get("semester") or source.get("semester") or "Current")
+            bucket = by_semester.setdefault(semester, {"attended": 0, "total": 0, "subjects": 0})
+            bucket["attended"] += int(subject.get("attended") or 0)
+            bucket["total"] += int(subject.get("total") or 0)
+            bucket["subjects"] += 1
+
+        if not by_semester and not available and not synced:
+            return "No semester metadata is cached yet. Fresh login will collect available semester filters from the portal."
+
+        response = "**Semester sync data**\n\n"
+        if available:
+            response += "Available semester options seen on portal: **" + ", ".join(map(str, available)) + "**.\n\n"
+        if synced:
+            response += "Synced filters:\n"
+            for item in synced[:12]:
+                response += f"- Year **{item.get('year', 'Unknown')}**, semester **{item.get('semester', 'Unknown')}**\n"
+            response += "\n"
+
+        if by_semester:
+            response += "| Semester | Subjects | Attendance |\n|:---|---:|---:|\n"
+            for semester, stats in sorted(by_semester.items(), key=lambda item: str(item[0])):
+                percentage = round((stats["attended"] / stats["total"] * 100), 2) if stats["total"] else 0
+                response += f"| {semester} | {stats['subjects']} | {percentage}% ({stats['attended']}/{stats['total']}) |\n"
+        return response
+
     def _codes(self):
         return (
             "**Shortcut commands**\n\n"
@@ -321,6 +408,8 @@ class ChatbotEngine:
             "- **ABSENT**: recent absent dates from the real grid\n"
             "- **SAFE**: subjects where you can skip classes\n"
             "- **RISK**: short or borderline subjects\n"
+            "- **PLAN**: priority action plan with next-miss impact\n"
+            "- **SEMESTERS**: synced semester/year filters and semester summary\n"
             "- **PROFILE**: student info extracted from portal data\n"
             "- **CALENDAR**: GH/TL/CS/MB and other portal marks\n"
             "- **WEBSITE**: what authenticated website sections are available\n"
@@ -368,6 +457,12 @@ class ChatbotEngine:
 
         if "calendar" in message_lower or "holiday" in message_lower or "leave" in message_lower or "gh" in message_lower or "tl" in message_lower:
             return self._calendar_report(payload)
+
+        if message_lower in {"plan", "action", "priority"} or "what should i attend" in message_lower or "next miss" in message_lower:
+            return self._plan_report(payload)
+
+        if "semester" in message_lower or "synced filters" in message_lower:
+            return self._semester_report(payload)
 
         if message_lower in {"total", "total attendance", "overall"} or "overall" in message_lower:
             insights = payload.get("insights") or {}

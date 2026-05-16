@@ -217,6 +217,8 @@ All endpoints return JSON. Requires `session_id` (except login/cache check).
 - `"ABSENT"` → Subject-wise absences, plus exact dates when v2 day-wise data exists
 - `"SAFE"` → Subjects where the student can skip classes while staying above 75%
 - `"RISK"` → Borderline or below-threshold subjects
+- `"PLAN"` → Priority action plan with next-missed-class impact
+- `"SEMESTERS"` → Synced semester/year filters and semester-wise summary
 - `"PROFILE"` → Authenticated student profile summary in the local app
 - `"CALENDAR"` → Portal marks such as GH/TL/CS/MB
 - `"WEBSITE"` → Authenticated website sections discovered after login
