@@ -3,3 +3,5 @@ flask-cors
 playwright
 beautifulsoup4
 gunicorn
+Pillow
+pytesseract
