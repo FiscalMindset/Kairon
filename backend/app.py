@@ -296,6 +296,334 @@ def refresh_captcha():
     }), 500
 
 
+def _analysis_subjects(analysis):
+    if isinstance(analysis, list):
+        return analysis
+    if isinstance(analysis, dict):
+        return analysis.get("attendance") or []
+    return []
+
+def _analysis_dict(analysis):
+    return analysis if isinstance(analysis, dict) else {}
+
+def _session_source_kind(session_data):
+    scraper = session_data.get("scraper")
+    return "cache" if getattr(scraper, "use_mock", False) else "live_scrape"
+
+def _session_analysis(session_id):
+    session_data = user_sessions.get(session_id)
+    if not session_data:
+        return None, None
+    scraper = session_data.get("scraper")
+    if not scraper:
+        return session_data, None
+    try:
+        return session_data, scraper.get_full_analysis()
+    except:
+        return session_data, None
+
+def _session_has_browser(session_id, session_data):
+    scraper = session_data.get("scraper")
+    if not scraper:
+        return False
+    try:
+        return bool(scraper.has_session(session_id))
+    except:
+        return False
+
+def _subject_coral_row(session_id, session_data, subject):
+    rollno = session_data.get("rollno", "")
+    source_kind = _session_source_kind(session_data)
+    absent = subject.get("absent", max(subject.get("total", 0) - subject.get("attended", 0), 0))
+    return {
+        "session_id": session_id,
+        "rollno": rollno,
+        "source_kind": source_kind,
+        "academic_year": subject.get("academic_year", ""),
+        "semester": subject.get("semester", ""),
+        "subject": subject.get("subject", ""),
+        "code": subject.get("code", ""),
+        "attended": subject.get("attended", 0),
+        "total": subject.get("total", 0),
+        "absent": absent,
+        "attended_days": subject.get("attended_days", 0),
+        "absent_days": subject.get("absent_days", 0),
+        "percentage": subject.get("percentage", 0),
+        "status_75": subject.get("status_75", subject.get("status", "")),
+        "skippable_75": subject.get("skippable_75", 0),
+        "needed_75": subject.get("needed_75", 0),
+        "status_65": subject.get("status_65", ""),
+        "skippable_65": subject.get("skippable_65", 0),
+        "needed_65": subject.get("needed_65", 0),
+        "status": subject.get("status", ""),
+        "message": subject.get("message_75") or subject.get("message", ""),
+        "details_link": subject.get("details_link") or "",
+        "day_wise_count": len(subject.get("day_wise") or []),
+        "special_event_count": len(subject.get("special_events") or []),
+    }
+
+def _session_not_found_response(collection_name):
+    return jsonify({"success": False, "message": "Unknown session_id", collection_name: []}), 404
+
+def _session_base_row(session_id, session_data):
+    return {
+        "session_id": session_id,
+        "rollno": session_data.get("rollno", ""),
+        "source_kind": _session_source_kind(session_data),
+    }
+
+def _event_special_codes(event):
+    codes = []
+    for code in event.get("special_codes") or []:
+        text = str(code or "").strip()
+        if text and text not in codes:
+            codes.append(text)
+    for token in event.get("tokens") or []:
+        text = str(token or "").strip()
+        if text and not text.isdigit() and text not in codes:
+            codes.append(text)
+    raw = str(event.get("raw") or "").strip()
+    if not codes and raw:
+        for token in raw.replace("+", " ").replace(",", " ").split():
+            token = token.strip()
+            if token and not token.isdigit() and token not in codes:
+                codes.append(token)
+    return codes
+
+@app.route('/api/coral/health', methods=['GET'])
+def coral_health():
+    return jsonify({
+        "success": True,
+        "service": "kairon",
+        "assistant_version": APP_VERSION,
+        "session_count": len(user_sessions),
+        "default_rollno": _default_rollno(),
+        "has_saved_password": bool(_default_password()),
+    })
+
+@app.route('/api/coral/sessions', methods=['GET'])
+def coral_sessions():
+    rows = []
+    for session_id, session_data in user_sessions.items():
+        _, analysis_data = _session_analysis(session_id)
+        subjects = _analysis_subjects(analysis_data)
+        scraper = session_data.get("scraper")
+        try:
+            debug_dir = scraper.get_session_debug_dir(session_id) if scraper else ""
+        except:
+            debug_dir = ""
+        rows.append({
+            "session_id": session_id,
+            "rollno": session_data.get("rollno", ""),
+            "source_kind": _session_source_kind(session_data),
+            "has_analysis": bool(subjects),
+            "subject_count": len(subjects),
+            "has_browser_session": _session_has_browser(session_id, session_data),
+            "debug_dir": debug_dir or "",
+        })
+    return jsonify({"success": True, "sessions": rows})
+
+@app.route('/api/coral/attendance_subjects', methods=['GET'])
+def coral_attendance_subjects():
+    session_id = request.args.get("session_id", "").strip()
+    session_data, analysis_data = _session_analysis(session_id)
+    if not session_data:
+        return jsonify({"success": False, "message": "Unknown session_id", "subjects": []}), 404
+
+    subjects = [
+        _subject_coral_row(session_id, session_data, subject)
+        for subject in _analysis_subjects(analysis_data)
+    ]
+    return jsonify({"success": True, "subjects": subjects})
+
+@app.route('/api/coral/attendance_days', methods=['GET'])
+def coral_attendance_days():
+    session_id = request.args.get("session_id", "").strip()
+    session_data, analysis_data = _session_analysis(session_id)
+    if not session_data:
+        return jsonify({"success": False, "message": "Unknown session_id", "days": []}), 404
+
+    rows = []
+    rollno = session_data.get("rollno", "")
+    source_kind = _session_source_kind(session_data)
+    for subject in _analysis_subjects(analysis_data):
+        for event in subject.get("day_wise") or []:
+            rows.append({
+                "session_id": session_id,
+                "rollno": rollno,
+                "source_kind": source_kind,
+                "academic_year": subject.get("academic_year", ""),
+                "semester": subject.get("semester", ""),
+                "subject": subject.get("subject", ""),
+                "code": subject.get("code", ""),
+                "date": event.get("date", ""),
+                "label": event.get("label", ""),
+                "status": event.get("status", ""),
+                "present_count": event.get("present_count", 0),
+                "absent_count": event.get("absent_count", 0),
+                "special_count": event.get("special_count", 0),
+                "special_codes": ",".join(_event_special_codes(event)),
+                "class_count": event.get("class_count", 0),
+                "raw": event.get("raw", ""),
+            })
+    return jsonify({"success": True, "days": rows})
+
+@app.route('/api/coral/session_summary', methods=['GET'])
+def coral_session_summary():
+    session_id = request.args.get("session_id", "").strip()
+    session_data, analysis_data = _session_analysis(session_id)
+    if not session_data:
+        return _session_not_found_response("summaries")
+
+    analysis = _analysis_dict(analysis_data)
+    insights = analysis.get("insights") or {}
+    source = analysis.get("source") or {}
+    subjects = _analysis_subjects(analysis_data)
+    row = {
+        **_session_base_row(session_id, session_data),
+        "schema_version": analysis.get("schema_version", 1),
+        "synced_at": analysis.get("synced_at", ""),
+        "academic_year": source.get("academic_year", ""),
+        "semester": source.get("semester", ""),
+        "available_year_count": len(source.get("available_years") or []),
+        "available_semester_count": len(source.get("available_semesters") or []),
+        "synced_filter_count": len(source.get("synced_filters") or []),
+        "surface_count": len(source.get("data_surfaces") or []),
+        "subject_count": insights.get("subject_count", len(subjects)),
+        "total_attended": insights.get("total_attended", sum(item.get("attended", 0) for item in subjects)),
+        "total_absent": insights.get("total_absent", sum(item.get("absent", max(item.get("total", 0) - item.get("attended", 0), 0)) for item in subjects)),
+        "total_classes": insights.get("total_classes", sum(item.get("total", 0) for item in subjects)),
+        "overall_percentage": insights.get("overall_percentage", 0),
+        "risky_subject_count": insights.get("risky_subject_count", len([item for item in subjects if item.get("status_75") != "safe"])),
+        "total_skippable_75": insights.get("total_skippable_75", 0),
+    }
+    return jsonify({"success": True, "summaries": [row]})
+
+@app.route('/api/coral/student_profile', methods=['GET'])
+def coral_student_profile():
+    session_id = request.args.get("session_id", "").strip()
+    session_data, analysis_data = _session_analysis(session_id)
+    if not session_data:
+        return _session_not_found_response("profiles")
+
+    analysis = _analysis_dict(analysis_data)
+    student = analysis.get("student") or {}
+    source = analysis.get("source") or {}
+    row = {
+        **_session_base_row(session_id, session_data),
+        "name": student.get("name", ""),
+        "student_id": student.get("student_id", ""),
+        "degree": student.get("degree", ""),
+        "department": student.get("department", ""),
+        "semester": source.get("semester") or student.get("semester", ""),
+        "academic_year": source.get("academic_year") or student.get("academic_year", ""),
+        "photo_available": bool(student.get("photo_available")),
+        "photo_cached": bool(student.get("photo_base64") or student.get("photo_data_url")),
+    }
+    return jsonify({"success": True, "profiles": [row]})
+
+@app.route('/api/coral/synced_filters', methods=['GET'])
+def coral_synced_filters():
+    session_id = request.args.get("session_id", "").strip()
+    session_data, analysis_data = _session_analysis(session_id)
+    if not session_data:
+        return _session_not_found_response("filters")
+
+    analysis = _analysis_dict(analysis_data)
+    source = analysis.get("source") or {}
+    rows = []
+    for index, item in enumerate(source.get("synced_filters") or [], start=1):
+        rows.append({
+            **_session_base_row(session_id, session_data),
+            "position": index,
+            "academic_year": item.get("year", ""),
+            "semester": item.get("semester", ""),
+            "filter_attempt": item.get("filter_attempt", 0),
+        })
+    return jsonify({"success": True, "filters": rows})
+
+@app.route('/api/coral/portal_surfaces', methods=['GET'])
+def coral_portal_surfaces():
+    session_id = request.args.get("session_id", "").strip()
+    session_data, analysis_data = _session_analysis(session_id)
+    if not session_data:
+        return _session_not_found_response("surfaces")
+
+    analysis = _analysis_dict(analysis_data)
+    source = analysis.get("source") or {}
+    portal = analysis.get("portal") or {}
+    surfaces = source.get("data_surfaces") or portal.get("data_surfaces") or []
+    rows = [
+        {**_session_base_row(session_id, session_data), "position": index, "surface": surface}
+        for index, surface in enumerate(surfaces, start=1)
+    ]
+    return jsonify({"success": True, "surfaces": rows})
+
+@app.route('/api/coral/portal_links', methods=['GET'])
+def coral_portal_links():
+    session_id = request.args.get("session_id", "").strip()
+    session_data, analysis_data = _session_analysis(session_id)
+    if not session_data:
+        return _session_not_found_response("links")
+
+    analysis = _analysis_dict(analysis_data)
+    portal = analysis.get("portal") or {}
+    rows = []
+    for index, item in enumerate(portal.get("links") or [], start=1):
+        rows.append({
+            **_session_base_row(session_id, session_data),
+            "position": index,
+            "section": item.get("section", ""),
+            "text": item.get("text", ""),
+            "target": item.get("target", ""),
+        })
+    return jsonify({"success": True, "links": rows})
+
+@app.route('/api/coral/status_legend', methods=['GET'])
+def coral_status_legend():
+    session_id = request.args.get("session_id", "").strip()
+    session_data, analysis_data = _session_analysis(session_id)
+    if not session_data:
+        return _session_not_found_response("legend")
+
+    analysis = _analysis_dict(analysis_data)
+    source = analysis.get("source") or {}
+    legend = source.get("status_legend") or {}
+    rows = [
+        {**_session_base_row(session_id, session_data), "code": code, "description": description}
+        for code, description in sorted(legend.items())
+    ]
+    return jsonify({"success": True, "legend": rows})
+
+@app.route('/api/coral/attendance_marks', methods=['GET'])
+def coral_attendance_marks():
+    session_id = request.args.get("session_id", "").strip()
+    session_data, analysis_data = _session_analysis(session_id)
+    if not session_data:
+        return _session_not_found_response("marks")
+
+    analysis = _analysis_dict(analysis_data)
+    source = analysis.get("source") or {}
+    legend = source.get("status_legend") or {}
+    rows = []
+    for subject in _analysis_subjects(analysis_data):
+        for event in subject.get("day_wise") or []:
+            for code in _event_special_codes(event):
+                rows.append({
+                    **_session_base_row(session_id, session_data),
+                    "academic_year": subject.get("academic_year", ""),
+                    "semester": subject.get("semester", ""),
+                    "subject": subject.get("subject", ""),
+                    "subject_code": subject.get("code", ""),
+                    "date": event.get("date", ""),
+                    "label": event.get("label", ""),
+                    "mark": code,
+                    "description": legend.get(code, ""),
+                    "raw": event.get("raw", ""),
+                })
+    return jsonify({"success": True, "marks": rows})
+
+
 def _find_available_port(preferred_port):
     """Return preferred_port if free; otherwise return an OS-assigned free port."""
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
