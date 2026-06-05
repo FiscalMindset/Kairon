@@ -1845,17 +1845,21 @@ class AttendanceScraper:
             return image
 
     def _ocr_captcha_from_bytes(self, captcha_bytes):
-        """OCR a captcha using multi-threshold voting, with optional cloud vision fallback."""
+        """OCR a captcha using ensemble multi-method voting with Tesseract.
+
+        Runs 4 independent preprocessing pipelines and votes on the consensus
+        5-digit result. ~50% accuracy per attempt; the caller should retry with
+        a fresh captcha on failure.
+        """
         if not captcha_bytes:
             return None
         try:
             import pytesseract
-            from PIL import Image
+            from PIL import Image, ImageOps, ImageEnhance, ImageFilter
             import io
 
             solver_mode = os.getenv("CAPTCHA_SOLVER", "tesseract").strip().lower()
 
-            # Try cloud vision first if configured
             if solver_mode in ("google", "vision", "gcv"):
                 solved = self._google_vision_solve_captcha(captcha_bytes)
                 if solved:
@@ -1866,31 +1870,69 @@ class AttendanceScraper:
                 if solved:
                     return solved
 
-            # Multi-threshold Tesseract voting
             image = Image.open(io.BytesIO(captcha_bytes))
             w, h = image.size
-            if w < 150:
-                image = image.resize((w * 10, h * 10), Image.LANCZOS)
-            gray = image.convert("L")
 
             candidates = {}
-            for thresh in range(60, 180, 10):
-                bw = gray.point(lambda x: 255 if x > thresh else 0, "1")
+            config_digits = "--oem 3 -c tessedit_char_whitelist=0123456789"
+
+            def _try_ocr(img, label=""):
                 for psm in [6, 7, 8]:
                     try:
-                        config = (
-                            f"--oem 3 --psm {psm} -c tessedit_char_whitelist=0123456789"
+                        text = pytesseract.image_to_string(
+                            img, config=f"{config_digits} --psm {psm}"
                         )
-                        text = pytesseract.image_to_string(bw, config=config)
                         cleaned = "".join(c for c in text if c.isdigit())
                         if 4 <= len(cleaned) <= 6:
                             candidates[cleaned] = candidates.get(cleaned, 0) + 1
                     except:
                         continue
 
+            # --- Pipeline 1: Raw upscale (no preprocessing) ---
+            for scale in [15, 20]:
+                big = image.resize((w * scale, h * scale), Image.LANCZOS)
+                _try_ocr(big, "raw")
+
+            # --- Pipeline 2: Color-aware filtering ---
+            rgb = image.convert("RGB")
+            rgb_big = rgb.resize((w * 15, h * 15), Image.LANCZOS)
+            px = rgb_big.load()
+            pw, ph = rgb_big.size
+            for dark_thresh in [50, 60, 70]:
+                result = Image.new("L", (pw, ph), 255)
+                rp = result.load()
+                for y in range(ph):
+                    for x in range(pw):
+                        r, g, b = px[x, y]
+                        if r < dark_thresh and g < dark_thresh and b < dark_thresh:
+                            rp[x, y] = 0
+                padded = ImageOps.expand(result, border=30, fill=255)
+                _try_ocr(padded, f"color{dark_thresh}")
+
+            # --- Pipeline 3: Enhanced grayscale with thresholds ---
+            gray = image.resize((w * 15, h * 15), Image.LANCZOS).convert("L")
+            for contrast in [2.0, 3.0]:
+                enhanced = ImageEnhance.Contrast(gray).enhance(contrast)
+                for thresh in [100, 110, 120, 130]:
+                    bw = enhanced.point(lambda x: 255 if x > thresh else 0, "1")
+                    padded = ImageOps.expand(bw, border=30, fill=255)
+                    _try_ocr(padded, f"gray{thresh}")
+
+            # --- Pipeline 4: Blur + threshold (separates touching chars) ---
+            blurred = gray.filter(ImageFilter.GaussianBlur(radius=1))
+            for thresh in [100, 110, 120]:
+                bw = blurred.point(lambda x: 255 if x > thresh else 0, "1")
+                padded = ImageOps.expand(bw, border=30, fill=255)
+                _try_ocr(padded, f"blur{thresh}")
+
+            # --- Vote: pick result with highest consensus ---
             if candidates:
                 best = max(candidates, key=candidates.get)
                 if len(best) >= 4:
+                    print(
+                        f"[OCR] Candidates: {sorted(candidates.items(), key=lambda x: -x[1])[:5]}"
+                    )
+                    print(f"[OCR] Winner: '{best}' (votes={candidates[best]})")
                     return best
 
             return None
@@ -1924,160 +1966,6 @@ class AttendanceScraper:
             return None
         except Exception as e:
             print(f"[DEBUG] Google Vision error: {e}")
-            return None
-        try:
-            import pytesseract
-            from PIL import Image
-            import io
-
-            solver_mode = os.getenv("CAPTCHA_SOLVER", "tesseract").strip().lower()
-            if solver_mode == "runanywhere":
-                solved = self._runanywhere_solve_captcha(captcha_bytes)
-                if solved:
-                    return solved
-
-            image = Image.open(io.BytesIO(captcha_bytes))
-            w, h = image.size
-            if w < 150:
-                image = image.resize((w * 10, h * 10), Image.LANCZOS)
-            gray = image.convert("L")
-
-            # Try multiple thresholds, collect all 5-digit candidates
-            candidates = {}
-            for thresh in range(60, 180, 10):
-                bw = gray.point(lambda x: 255 if x > thresh else 0, "1")
-                for psm in [6, 7, 8]:
-                    try:
-                        config = (
-                            f"--oem 3 --psm {psm} -c tessedit_char_whitelist=0123456789"
-                        )
-                        text = pytesseract.image_to_string(bw, config=config)
-                        cleaned = "".join(c for c in text if c.isdigit())
-                        if 4 <= len(cleaned) <= 6:
-                            candidates[cleaned] = candidates.get(cleaned, 0) + 1
-                    except:
-                        continue
-
-            if not candidates:
-                return None
-
-            # Pick the most frequent result (majority vote)
-            best = max(candidates, key=candidates.get)
-            return best if len(best) >= 4 else None
-
-        except ImportError:
-            print("[DEBUG] pytesseract not installed")
-            return None
-        except Exception as e:
-            print(f"[DEBUG] OCR error: {e}")
-            return None
-        try:
-            import pytesseract
-            from PIL import Image
-            import io
-
-            solver_mode = os.getenv("CAPTCHA_SOLVER", "tesseract").strip().lower()
-            if solver_mode == "runanywhere":
-                solved = self._runanywhere_solve_captcha(captcha_bytes)
-                if solved:
-                    return solved
-
-            image = Image.open(io.BytesIO(captcha_bytes))
-            processed = self._preprocess_captcha_image(image)
-
-            # psm6 (single block of text) works best for this portal's captcha
-            psm_modes = [6, 7, 13, 8]
-            best_result = None
-            best_len = 0
-
-            for psm in psm_modes:
-                try:
-                    config = (
-                        f"--oem 3 --psm {psm} -c tessedit_char_whitelist=0123456789"
-                    )
-                    ocr_text = pytesseract.image_to_string(processed, config=config)
-                    cleaned = "".join(c for c in ocr_text if c.isdigit()).strip()
-                    if 4 <= len(cleaned) <= 6 and len(cleaned) > best_len:
-                        best_result = cleaned
-                        best_len = len(cleaned)
-                except:
-                    continue
-
-            # Fallback to original image
-            if not best_result:
-                for psm in [6, 7]:
-                    try:
-                        config = (
-                            f"--oem 3 --psm {psm} -c tessedit_char_whitelist=0123456789"
-                        )
-                        ocr_text = pytesseract.image_to_string(image, config=config)
-                        cleaned = "".join(c for c in ocr_text if c.isdigit()).strip()
-                        if 4 <= len(cleaned) <= 6 and len(cleaned) > best_len:
-                            best_result = cleaned
-                            best_len = len(cleaned)
-                    except:
-                        continue
-
-            return best_result if best_result else None
-
-        except ImportError:
-            print(
-                "[DEBUG] pytesseract not installed. Install: pip install pytesseract Pillow"
-            )
-            return None
-        except Exception as e:
-            print(f"[DEBUG] OCR error: {e}")
-            return None
-        try:
-            import pytesseract
-            from PIL import Image
-            import io
-
-            solver_mode = os.getenv("CAPTCHA_SOLVER", "tesseract").strip().lower()
-            if solver_mode == "runanywhere":
-                solved = self._runanywhere_solve_captcha(captcha_bytes)
-                if solved:
-                    return solved
-
-            image = Image.open(io.BytesIO(captcha_bytes))
-            processed = self._preprocess_captcha_image(image)
-
-            psm_modes = [8, 7, 13, 6]
-            best_result = None
-            best_len = 0
-
-            for psm in psm_modes:
-                try:
-                    config = f"--oem 3 --psm {psm} -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-                    ocr_text = pytesseract.image_to_string(processed, config=config)
-                    cleaned = "".join(c for c in ocr_text if c.isalnum()).strip()
-                    if 3 <= len(cleaned) <= 8 and len(cleaned) > best_len:
-                        best_result = cleaned
-                        best_len = len(cleaned)
-                except:
-                    continue
-
-            if not best_result:
-                for psm in [8, 7]:
-                    try:
-                        config = f"--oem 3 --psm {psm} -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-                        ocr_text = pytesseract.image_to_string(image, config=config)
-                        cleaned = "".join(c for c in ocr_text if c.isalnum()).strip()
-                        if 3 <= len(cleaned) <= 8 and len(cleaned) > best_len:
-                            best_result = cleaned
-                            best_len = len(cleaned)
-                    except:
-                        continue
-
-            return best_result if best_result else None
-
-        except ImportError:
-            print(
-                "[DEBUG] pytesseract not installed. Install: pip install pytesseract Pillow"
-            )
-            return None
-        except Exception as e:
-            print(f"[DEBUG] OCR error: {e}")
             return None
 
     def _ocr_captcha_from_page(self, page, frame):
