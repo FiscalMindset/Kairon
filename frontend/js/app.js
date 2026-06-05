@@ -44,6 +44,49 @@ const App = {
             .replace(/>/g, '&gt;');
     },
 
+    async autoOcr() {
+        if (autoOcrTried) return;
+        autoOcrTried = true;
+        const ocrBtn = document.getElementById('autoOcrBtn');
+        const verifyBtn = document.getElementById('verifyBtn');
+        const origOcrText = ocrBtn ? ocrBtn.innerHTML : '';
+        const origVerifyText = verifyBtn ? verifyBtn.innerHTML : '';
+
+        if (ocrBtn) { ocrBtn.innerHTML = '⏳ OCR...'; ocrBtn.disabled = true; }
+        if (verifyBtn) { verifyBtn.innerHTML = '<div class="loader"></div>'; verifyBtn.disabled = true; }
+
+        try {
+            const res = await fetch('/api/captcha', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId, auto_ocr: true })
+            });
+            const data = await res.json();
+
+            if (data.success) {
+                localStorage.setItem('nsut_rollno', rollNo);
+                this.renderChat(data.data);
+                const warning = data.live_sync_warning
+                    ? `\n\n**Live sync note:** ${data.live_sync_warning}. Debug folder: ${data.debug_dir || 'not available'}`
+                    : "";
+                this.addBotMessage("CAPTCHA auto-solved with OCR. " + data.message + warning + "\n\nType **HI** for the full dashboard, **PLAN** for priorities, or **CODES** for shortcuts.");
+            } else {
+                // OCR failed - show manual input
+                if (ocrBtn) { ocrBtn.innerHTML = origOcrText; ocrBtn.disabled = false; }
+                if (verifyBtn) { verifyBtn.innerHTML = origVerifyText; verifyBtn.disabled = false; }
+                if (data.retryable && data.captcha_base64) {
+                    document.getElementById('captchaImg').src = data.captcha_base64;
+                    captchaIssuedAt = Date.now();
+                }
+                autoOcrTried = false; // allow manual retry
+            }
+        } catch (e) {
+            if (ocrBtn) { ocrBtn.innerHTML = origOcrText; ocrBtn.disabled = false; }
+            if (verifyBtn) { verifyBtn.innerHTML = origVerifyText; verifyBtn.disabled = false; }
+            autoOcrTried = false;
+        }
+    },
+
     escapeHtml(value) {
         return String(value || '')
             .replace(/&/g, '&amp;')
@@ -617,6 +660,8 @@ const App = {
                 document.getElementById('captchaArea').style.display = 'flex';
                 document.getElementById('captchaImg').src = data.captcha_base64;
                 captchaIssuedAt = Date.now();
+                // Auto-run OCR immediately
+                setTimeout(() => this.autoOcr(), 500);
             } else {
                 btn.innerHTML = 'Connect to Portal';
                 alert(data.message);
@@ -704,41 +749,8 @@ const App = {
         });
        
            document.getElementById('autoOcrBtn').addEventListener('click', async () => {
-               const btn = document.getElementById('autoOcrBtn');
-               const originalText = btn.innerHTML;
-               btn.innerHTML = '⏳ Reading...';
-               btn.disabled = true;
-           
-               try {
-                   const res = await fetch('/api/captcha', {
-                       method: 'POST',
-                       headers: { 'Content-Type': 'application/json' },
-                       body: JSON.stringify({ session_id: sessionId, auto_ocr: true })
-                   });
-                   const data = await res.json();
-               
-                   if (data.success) {
-                       localStorage.setItem('nsut_rollno', rollNo);
-                       this.renderChat(data.data);
-                       const warning = data.live_sync_warning
-                           ? `\n\n**Live sync note:** ${data.live_sync_warning}. Debug folder: ${data.debug_dir || 'not available'}`
-                           : "";
-                       this.addBotMessage("CAPTCHA auto-read with OCR. " + data.message + warning + "\n\nType **HI** for the full dashboard, **PLAN** for priorities, or **CODES** for shortcuts.");
-                   } else {
-                       btn.innerHTML = originalText;
-                       btn.disabled = false;
-                       if (data.retryable && data.captcha_base64) {
-                           document.getElementById('captchaImg').src = data.captcha_base64;
-                           captchaIssuedAt = Date.now();
-                       }
-                       const dbg = data.debug_dir ? `\n\nDebug folder: ${data.debug_dir}` : '';
-                       alert("❌ OCR failed: " + data.message + "\n\nYou can retry OCR or enter CAPTCHA manually without re-login." + dbg);
-                   }
-               } catch (e) {
-                   btn.innerHTML = originalText;
-                   btn.disabled = false;
-                   alert("❌ Error: " + e.message);
-               }
+               autoOcrTried = false; // reset so autoOcr can run
+               await this.autoOcr();
            });
     },
 

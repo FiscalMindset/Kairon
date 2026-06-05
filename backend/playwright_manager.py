@@ -12,12 +12,10 @@ _playwright = None
 _browser = None
 _last_error = None
 _lock = threading.Lock()
-_browser_launch_count = 0
-_max_relaunches = 5
 
 
 def _browser_args():
-    """Return hardened Chromium launch args for headless Render-like environments."""
+    """Return stable Chromium launch args for headless environments."""
     return [
         "--no-sandbox",
         "--disable-dev-shm-usage",
@@ -26,7 +24,6 @@ def _browser_args():
         "--disable-accelerated-2d-canvas",
         "--no-first-run",
         "--no-zygote",
-        "--single-process",
         "--disable-extensions",
         "--disable-background-networking",
         "--disable-default-apps",
@@ -38,44 +35,79 @@ def _browser_args():
     ]
 
 
+def _is_browser_alive(browser):
+    """Check if the browser process is still running."""
+    try:
+        browser.contexts
+        return True
+    except Exception:
+        return False
+
+
+def _start_playwright():
+    """Start or restart the Playwright runtime."""
+    global _playwright
+    try:
+        if _playwright:
+            try:
+                _playwright.stop()
+            except Exception:
+                pass
+        _playwright = sync_playwright().start()
+        return True
+    except Exception as exc:
+        _playwright = None
+        return False
+
+
+def _launch_browser():
+    """Launch a fresh Chromium browser instance."""
+    global _browser, _last_error
+    try:
+        _browser = _playwright.chromium.launch(
+            headless=True,
+            args=_browser_args(),
+        )
+        _last_error = None
+        return True
+    except Exception as exc:
+        _last_error = str(exc)
+        _browser = None
+        return False
+
+
 def get_browser():
     """Return a launched browser instance or None on failure.
 
-    Retries up to 3 times with exponential backoff on transient failures.
+    Checks if existing browser is alive before reusing.
+    Retries up to 3 times with backoff on failure.
     """
-    global _playwright, _browser, _last_error, _browser_launch_count
+    global _playwright, _browser, _last_error
     with _lock:
+        # Reuse existing browser if alive
+        if _browser and _is_browser_alive(_browser):
+            return _browser
+
+        # Browser is dead or missing — relaunch
+        _browser = None
+
         for attempt in range(3):
             if _playwright is None:
-                try:
-                    _playwright = sync_playwright().start()
-                except Exception as exc:
-                    _last_error = f"Could not start Playwright runtime: {exc}"
-                    _playwright = None
+                if not _start_playwright():
+                    _last_error = "Could not start Playwright runtime"
                     return None
 
-            if _browser is None:
-                try:
-                    _browser = _playwright.chromium.launch(
-                        headless=True,
-                        args=_browser_args(),
-                    )
-                    _last_error = None
-                    _browser_launch_count += 1
-                except Exception as exc:
-                    _last_error = str(exc)
-                    _browser = None
-                    # Try restarting Playwright runtime on next iteration
-                    try:
-                        _playwright.stop()
-                    except Exception:
-                        pass
-                    _playwright = None
-                    if attempt < 2:
-                        time.sleep(1 * (attempt + 1))
-                    continue
+            if _launch_browser():
+                return _browser
 
-            return _browser
+            # Failed — restart Playwright runtime for next attempt
+            try:
+                _playwright.stop()
+            except Exception:
+                pass
+            _playwright = None
+            if attempt < 2:
+                time.sleep(1 * (attempt + 1))
 
     return None
 
