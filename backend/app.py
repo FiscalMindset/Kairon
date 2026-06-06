@@ -1,3 +1,4 @@
+import traceback as _traceback
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from scraper import AttendanceScraper
@@ -38,17 +39,46 @@ _load_local_env()
 # Configure logging
 setup_logging(app)
 
-FRONTEND_DIR = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "frontend"
-)
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-APP_VERSION = "data-analysis-assistant-v2"
+APP_VERSION = "data-analysis-assistant-v3"
 
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
-# Map session_id -> { "scraper": AttendanceScraper(), "chatbot": ChatbotEngine() }
+FRONTEND_DIST = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "frontend", "dist"
+)
+SERVE_FRONTEND = os.path.isfile(os.path.join(FRONTEND_DIST, "index.html"))
+
 user_sessions = {}
+
+if SERVE_FRONTEND:
+    print(f"[PRODUCTION] Serving frontend from {FRONTEND_DIST}")
+
+    @app.route("/")
+    def serve_index():
+        return send_from_directory(FRONTEND_DIST, "index.html")
+
+    @app.route("/assets/<path:filename>")
+    def serve_assets(filename):
+        return send_from_directory(os.path.join(FRONTEND_DIST, "assets"), filename)
+
+    @app.route("/models/<path:filename>")
+    def serve_vlm_models(filename):
+        return send_from_directory(
+            os.path.join(FRONTEND_DIST, "..", "public", "models"), filename
+        )
+
+    @app.route("/<path:filename>")
+    def serve_static(filename):
+        if filename.startswith("api/"):
+            return jsonify({"error": "Not found"}), 404
+        filepath = os.path.join(FRONTEND_DIST, filename)
+        if os.path.exists(filepath) and os.path.isfile(filepath):
+            return send_from_directory(FRONTEND_DIST, filename)
+        return send_from_directory(FRONTEND_DIST, "index.html")
+else:
+    print("[DEVELOPMENT] API-only mode. Frontend served by Vite on port 5173")
 
 
 def _default_rollno():
@@ -88,10 +118,8 @@ def _load_cached_analysis(rollno):
 
 
 def _merge_live_profile(analysis, scraper):
-    """Attach safe profile hints from the authenticated portal to cached analysis."""
     if not isinstance(analysis, dict):
         return analysis
-
     portal_catalog = getattr(scraper, "_last_portal_catalog", {}) or {}
     attendance_payload = getattr(scraper, "_last_attendance_payload", {}) or {}
     live_student = {
@@ -125,16 +153,6 @@ def _create_cached_session(session_id, rollno, cached_data, source_scraper=None)
     return analysis, _cache_schema_version(cached_data)
 
 
-@app.route("/")
-def serve_index():
-    return send_from_directory(FRONTEND_DIR, "index.html")
-
-
-@app.route("/<path:filename>")
-def serve_static(filename):
-    return send_from_directory(FRONTEND_DIR, filename)
-
-
 @app.route("/api/config", methods=["GET"])
 def config():
     rollno = _default_rollno()
@@ -154,7 +172,7 @@ def config():
             "has_cached_data": bool(cache_file and os.path.exists(cache_file)),
             "cache_schema_version": cache_schema_version,
             "cache_needs_refresh": bool(
-                cache_schema_version and cache_schema_version < 2
+                cache_schema_version and cache_schema_version < 3
             ),
         }
     )
@@ -220,7 +238,7 @@ def check_cache():
                 "message": "Loaded from cache",
                 "assistant_version": APP_VERSION,
                 "cache_schema_version": cache_schema_version,
-                "cache_needs_refresh": cache_schema_version < 2,
+                "cache_needs_refresh": cache_schema_version < 3,
                 "analysis": analysis,
             }
         )
@@ -257,13 +275,27 @@ def verify_captcha():
     # Pass fresh credentials from frontend so captcha submission uses what the user sees
     fresh_rollno = data.get("rollno")
     fresh_password = data.get("password")
-    result = scraper.submit_captcha_and_scrape(
-        session_id,
-        captcha_text=captcha_text,
-        auto_ocr=auto_ocr,
-        override_rollno=fresh_rollno,
-        override_password=fresh_password,
+    print(
+        f"[CAPTCHA] Submitting for rollno={fresh_rollno}, auto_ocr={auto_ocr}, captcha_len={len(captcha_text or '')}"
     )
+    try:
+        result = scraper.submit_captcha_and_scrape(
+            session_id,
+            captcha_text=captcha_text,
+            auto_ocr=auto_ocr,
+            override_rollno=fresh_rollno,
+            override_password=fresh_password,
+        )
+    except Exception as e:
+        _traceback.print_exc()
+        print(f"[CAPTCHA] Unhandled exception in submit_captcha_and_scrape: {e}")
+        return jsonify(
+            {
+                "success": False,
+                "message": f"Scraper error: {str(e)[:300]}",
+                "retryable": True,
+            }
+        ), 500
 
     if result.get("success"):
         # Save to cache
@@ -305,7 +337,7 @@ def verify_captcha():
                             "live_sync_warning": "Portal returned no non-zero attendance records for the tested year/semester filters.",
                             "debug_dir": debug_dir,
                             "cache_schema_version": cache_schema_version,
-                            "cache_needs_refresh": cache_schema_version < 2,
+                            "cache_needs_refresh": cache_schema_version < 3,
                             "data": analysis,
                         }
                     )
@@ -535,6 +567,10 @@ def coral_sessions():
             debug_dir = scraper.get_session_debug_dir(session_id) if scraper else ""
         except:
             debug_dir = ""
+        analysis = _analysis_dict(analysis_data)
+        insights = analysis.get("insights") or {}
+        student = analysis.get("student") or {}
+        source = analysis.get("source") or {}
         rows.append(
             {
                 "session_id": session_id,
@@ -544,6 +580,18 @@ def coral_sessions():
                 "subject_count": len(subjects),
                 "has_browser_session": _session_has_browser(session_id, session_data),
                 "debug_dir": debug_dir or "",
+                "student_name": student.get("name", ""),
+                "overall_percentage": insights.get("overall_percentage"),
+                "total_attended": insights.get("total_attended", 0),
+                "total_classes": insights.get("total_classes", 0),
+                "total_absent": insights.get("total_absent", 0),
+                "synced_at": analysis.get("synced_at", ""),
+                "schema_version": analysis.get("schema_version", 1),
+                "academic_year": source.get("academic_year", ""),
+                "semester": source.get("semester", ""),
+                "available_years": source.get("available_years", []),
+                "available_semesters": source.get("available_semesters", []),
+                "synced_filters": source.get("synced_filters", []),
             }
         )
     return jsonify({"success": True, "sessions": rows})
@@ -842,9 +890,19 @@ def analysis():
     return jsonify({"success": True, "analysis": scraper.get_full_analysis()})
 
 
+@app.errorhandler(Exception)
+def _handle_global_error(error):
+    print(f"[FATAL] Unhandled exception: {error}")
+    _traceback.print_exc()
+    return jsonify(
+        {"success": False, "message": f"Server error: {str(error)[:200]}"}
+    ), 500
+
+
 if __name__ == "__main__":
     host = os.getenv("HOST", "0.0.0.0")
     preferred_port = int(os.getenv("PORT", "5000"))
     port = _find_available_port(preferred_port)
     print(f"[STARTUP] Preferred port {preferred_port}; using port {port}")
+    print(f"[STARTUP] Starting on {host}:{port}")
     app.run(host=host, debug=True, port=port, threaded=False, use_reloader=False)

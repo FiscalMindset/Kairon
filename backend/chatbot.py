@@ -37,14 +37,21 @@ class ChatbotEngine:
     def _legacy_insights(self, subjects):
         total_classes = sum(subject.get("total", 0) for subject in subjects)
         total_attended = sum(subject.get("attended", 0) for subject in subjects)
-        total_absent = sum(max(subject.get("total", 0) - subject.get("attended", 0), 0) for subject in subjects)
+        total_absent = sum(
+            max(subject.get("total", 0) - subject.get("attended", 0), 0)
+            for subject in subjects
+        )
         return {
             "subject_count": len(subjects),
             "total_classes": total_classes,
             "total_attended": total_attended,
             "total_absent": total_absent,
-            "overall_percentage": round((total_attended / total_classes * 100), 2) if total_classes else 0.0,
-            "risky_subjects": [subject for subject in subjects if subject.get("status_75") != "safe"],
+            "overall_percentage": round((total_attended / total_classes * 100), 2)
+            if total_classes
+            else 0.0,
+            "risky_subjects": [
+                subject for subject in subjects if subject.get("status_75") != "safe"
+            ],
         }
 
     def _subject_label(self, subject):
@@ -128,7 +135,9 @@ class ChatbotEngine:
         if risky:
             response += f"\nSubjects needing attention: **{len(risky)}**. Type **RISK** for the list.\n"
         else:
-            response += "\nNo subject is below 75%, but borderline subjects still need care.\n"
+            response += (
+                "\nNo subject is below 75%, but borderline subjects still need care.\n"
+            )
 
         response += "\n" + self._build_subject_table(subjects)
         response += "\nTry: **SW**, **TOTAL**, **ABSENT**, **SAFE**, **RISK**, **PROFILE**, **CALENDAR**, **WEBSITE**, or a subject code like **MEMEC303**."
@@ -141,12 +150,16 @@ class ChatbotEngine:
         response += f"| Absent classes | {subject.get('absent', 0)} |\n"
         response += f"| 75% status | {self._status_word(subject)} |\n"
         response += f"| 75% action | {subject.get('message_75', subject.get('message', 'No prediction available'))} |\n"
-        response += f"| 65% action | {subject.get('message_65', 'No prediction available')} |\n"
+        response += (
+            f"| 65% action | {subject.get('message_65', 'No prediction available')} |\n"
+        )
         response += f"| Days with absence | {subject.get('absent_days', len(subject.get('absent_dates', [])))} |\n"
 
         absent_dates = subject.get("absent_dates") or []
         if absent_dates:
-            response += "\nRecent absent dates: **" + ", ".join(absent_dates[-8:]) + "**\n"
+            response += (
+                "\nRecent absent dates: **" + ", ".join(absent_dates[-8:]) + "**\n"
+            )
 
         recent = subject.get("recent_activity") or subject.get("day_wise") or []
         recent = list(recent)[-10:]
@@ -202,12 +215,16 @@ class ChatbotEngine:
 
     def _safe_report(self, payload):
         subjects = self._subjects(payload)
-        safe_subjects = [subject for subject in subjects if subject.get("skippable_75", 0) > 0]
+        safe_subjects = [
+            subject for subject in subjects if subject.get("skippable_75", 0) > 0
+        ]
         if not safe_subjects:
             return "No subject has a safe skip buffer at 75% right now."
 
         response = "**Safe skip buffer at 75%:**\n\n"
-        for subject in sorted(safe_subjects, key=lambda item: item.get("skippable_75", 0), reverse=True):
+        for subject in sorted(
+            safe_subjects, key=lambda item: item.get("skippable_75", 0), reverse=True
+        ):
             response += (
                 f"- **{self._subject_label(subject)}**: skip **{subject.get('skippable_75', 0)}** "
                 f"class(es), current {subject.get('percentage')}%.\n"
@@ -219,11 +236,16 @@ class ChatbotEngine:
         absences = insights.get("recent_absences") or []
         if not absences:
             subjects = self._subjects(payload)
-            response = f"Total absent classes: **{insights.get('total_absent', 0)}**.\n\n"
+            response = (
+                f"Total absent classes: **{insights.get('total_absent', 0)}**.\n\n"
+            )
             if subjects:
                 response += "| Subject | Absent | Attendance |\n|:---|---:|:---|\n"
                 for subject in subjects:
-                    absent = subject.get("absent", max(subject.get("total", 0) - subject.get("attended", 0), 0))
+                    absent = subject.get(
+                        "absent",
+                        max(subject.get("total", 0) - subject.get("attended", 0), 0),
+                    )
                     response += (
                         f"| {self._subject_label(subject)} | {absent} | "
                         f"{subject.get('percentage', 0)}% ({subject.get('attended', 0)}/{subject.get('total', 0)}) |\n"
@@ -270,17 +292,32 @@ class ChatbotEngine:
         ]:
             if student.get(key):
                 response += f"- {label}: **{student.get(key)}**\n"
-        response += f"- Degree: **{student.get('degree', 'Unknown')}**\n"
-        response += f"- Department: **{student.get('department', 'Unknown')}**\n"
-        response += f"- Semester: **{source.get('semester') or student.get('semester', 'Unknown')}**\n"
-        response += f"- Academic year: **{source.get('academic_year') or student.get('academic_year', 'Unknown')}**\n"
-        response += f"- Portal photo: **{'available' if student.get('photo_available') else 'not cached'}**\n"
+        deg = student.get("degree") or student.get("programme") or ""
+        dept = student.get("department") or student.get("branch") or ""
+        sem = source.get("semester") or student.get("semester") or ""
+        yr = source.get("academic_year") or student.get("academic_year") or ""
+        response += f"- Degree: **{deg or 'Unknown'}**\n"
+        response += f"- Department: **{dept or 'Unknown'}**\n"
+        response += f"- Semester: **{sem or 'Unknown'}**\n"
+        response += f"- Academic year: **{yr or 'Unknown'}**\n"
+        photo_status = (
+            "available"
+            if student.get("photo_base64")
+            else (
+                "marked available" if student.get("photo_available") else "not cached"
+            )
+        )
+        response += f"- Portal photo: **{photo_status}**\n"
         return response
 
     def _website_report(self, payload):
         portal = payload.get("portal") or {}
         links = portal.get("links") or []
-        surfaces = payload.get("source", {}).get("data_surfaces") or portal.get("data_surfaces") or []
+        surfaces = (
+            payload.get("source", {}).get("data_surfaces")
+            or portal.get("data_surfaces")
+            or []
+        )
         if not links and not surfaces:
             return "I do not have the authenticated portal menu cached yet. Login once, then I can map the available sections."
 
@@ -290,7 +327,9 @@ class ChatbotEngine:
 
         grouped = {}
         for link in links:
-            grouped.setdefault(link.get("section") or "Portal", []).append(link.get("text"))
+            grouped.setdefault(link.get("section") or "Portal", []).append(
+                link.get("text")
+            )
         for section, items in list(grouped.items())[:8]:
             clean_items = [item for item in items if item][:8]
             if clean_items:
@@ -318,7 +357,10 @@ class ChatbotEngine:
         if total <= 0:
             return 0
         needed = 0
-        while total + needed > 0 and ((attended + needed) / (total + needed) * 100) < target:
+        while (
+            total + needed > 0
+            and ((attended + needed) / (total + needed) * 100) < target
+        ):
             needed += 1
         return needed
 
@@ -359,7 +401,9 @@ class ChatbotEngine:
         response += "\n**Best move:** "
         weakest = sorted_subjects[0]
         if weakest.get("percentage", 0) < 75:
-            response += f"focus on **{self._subject_label(weakest)}** until it crosses 75%."
+            response += (
+                f"focus on **{self._subject_label(weakest)}** until it crosses 75%."
+            )
         elif self._percentage_after_miss(weakest) < 75:
             response += f"avoid missing **{self._subject_label(weakest)}** next; it will fall below 75%."
         else:
@@ -374,8 +418,12 @@ class ChatbotEngine:
 
         by_semester = {}
         for subject in subjects:
-            semester = str(subject.get("semester") or source.get("semester") or "Current")
-            bucket = by_semester.setdefault(semester, {"attended": 0, "total": 0, "subjects": 0})
+            semester = str(
+                subject.get("semester") or source.get("semester") or "Current"
+            )
+            bucket = by_semester.setdefault(
+                semester, {"attended": 0, "total": 0, "subjects": 0}
+            )
             bucket["attended"] += int(subject.get("attended") or 0)
             bucket["total"] += int(subject.get("total") or 0)
             bucket["subjects"] += 1
@@ -385,7 +433,11 @@ class ChatbotEngine:
 
         response = "**Semester sync data**\n\n"
         if available:
-            response += "Available semester options seen on portal: **" + ", ".join(map(str, available)) + "**.\n\n"
+            response += (
+                "Available semester options seen on portal: **"
+                + ", ".join(map(str, available))
+                + "**.\n\n"
+            )
         if synced:
             response += "Synced filters:\n"
             for item in synced[:12]:
@@ -394,8 +446,14 @@ class ChatbotEngine:
 
         if by_semester:
             response += "| Semester | Subjects | Attendance |\n|:---|---:|---:|\n"
-            for semester, stats in sorted(by_semester.items(), key=lambda item: str(item[0])):
-                percentage = round((stats["attended"] / stats["total"] * 100), 2) if stats["total"] else 0
+            for semester, stats in sorted(
+                by_semester.items(), key=lambda item: str(item[0])
+            ):
+                percentage = (
+                    round((stats["attended"] / stats["total"] * 100), 2)
+                    if stats["total"]
+                    else 0
+                )
                 response += f"| {semester} | {stats['subjects']} | {percentage}% ({stats['attended']}/{stats['total']}) |\n"
         return response
 
@@ -425,10 +483,19 @@ class ChatbotEngine:
         if message_lower in {"codes", "help", "commands", "shortcuts"}:
             return self._codes()
 
-        if "profile" in message_lower or "student" in message_lower or "photo" in message_lower:
+        if (
+            "profile" in message_lower
+            or "student" in message_lower
+            or "photo" in message_lower
+        ):
             return self._profile_report(payload)
 
-        if "website" in message_lower or "available" in message_lower or "portal" in message_lower or "what data" in message_lower:
+        if (
+            "website" in message_lower
+            or "available" in message_lower
+            or "portal" in message_lower
+            or "what data" in message_lower
+        ):
             return self._website_report(payload)
 
         if not subjects:
@@ -446,25 +513,44 @@ class ChatbotEngine:
         if message_lower in {"hi", "hello", "summary", "dashboard"}:
             return self._summary(payload)
 
-        if message_lower == "sw" or "subject wise" in message_lower or "subject-wise" in message_lower:
+        if (
+            message_lower == "sw"
+            or "subject wise" in message_lower
+            or "subject-wise" in message_lower
+        ):
             self.state = "waiting_for_subject_number"
-            self.subject_map = {index + 1: subject for index, subject in enumerate(subjects)}
+            self.subject_map = {
+                index + 1: subject for index, subject in enumerate(subjects)
+            }
             response = "**Subject-wise attendance**\n\n"
             for index, subject in self.subject_map.items():
                 response += f"**{index}.** {self._subject_label(subject)} - {subject.get('percentage')}%\n"
             response += "\nType the serial number for day-wise marks, absent dates, and safe-skip analysis."
             return response
 
-        if "calendar" in message_lower or "holiday" in message_lower or "leave" in message_lower or "gh" in message_lower or "tl" in message_lower:
+        if (
+            "calendar" in message_lower
+            or "holiday" in message_lower
+            or "leave" in message_lower
+            or "gh" in message_lower
+            or "tl" in message_lower
+        ):
             return self._calendar_report(payload)
 
-        if message_lower in {"plan", "action", "priority"} or "what should i attend" in message_lower or "next miss" in message_lower:
+        if (
+            message_lower in {"plan", "action", "priority"}
+            or "what should i attend" in message_lower
+            or "next miss" in message_lower
+        ):
             return self._plan_report(payload)
 
         if "semester" in message_lower or "synced filters" in message_lower:
             return self._semester_report(payload)
 
-        if message_lower in {"total", "total attendance", "overall"} or "overall" in message_lower:
+        if (
+            message_lower in {"total", "total attendance", "overall"}
+            or "overall" in message_lower
+        ):
             insights = payload.get("insights") or {}
             return (
                 f"Overall attendance is **{insights.get('overall_percentage', 0)}%** "
@@ -475,10 +561,19 @@ class ChatbotEngine:
         if "absent" in message_lower or "missed" in message_lower:
             return self._absence_report(payload)
 
-        if "danger" in message_lower or "short" in message_lower or "low" in message_lower or "risk" in message_lower:
+        if (
+            "danger" in message_lower
+            or "short" in message_lower
+            or "low" in message_lower
+            or "risk" in message_lower
+        ):
             return self._risk_report(payload)
 
-        if "safe" in message_lower or "skip" in message_lower or "bunk" in message_lower:
+        if (
+            "safe" in message_lower
+            or "skip" in message_lower
+            or "bunk" in message_lower
+        ):
             return self._safe_report(payload)
 
         matched_subject = self._match_subject(message_lower, subjects)

@@ -1,501 +1,270 @@
-# Kairon: NSUT Smart Attendance Assistant 🎓
+# Kairon: NSUT Smart Attendance Assistant
 
-An intelligent attendance analytics chatbot for NSUT that predicts leave eligibility and provides insights into your attendance patterns using web scraping and conversational AI.
+An intelligent attendance analytics platform for NSUT that scrapes the IMS portal, solves CAPTCHAs (manual / OCR / on-device AI vision), and provides a real-time dashboard with trends, predictions, and a conversational AI assistant.
 
-The logged-in workspace now combines chat with an interactive dashboard:
-- subject, semester, date-range, status, and search filters
-- overall metrics, subject comparison bars, cumulative attendance trend, subject table, and date-wise records
-- authenticated profile header with portal name, roll number, and captured student photo when the portal exposes it
-- chat commands for summary, subject-wise details, absences, risk/safe subjects, profile, website surfaces, and shortcut help
+**Built by [vicky kjumar](https://github.com/fiscalmindset)** — [LinkedIn](https://linkedin.com/in/algsoch) — npdimagine@gmail.com
 
 ---
 
-## 🎯 Why This Architecture?
+## Architecture
 
-### Why Playwright over Selenium?
-- **Performance:** Playwright is 2-3x faster than Selenium for modern web apps
-- **Better Frame Handling:** Seamlessly navigates complex frame structures (like the NSUT portal's banner/data frames)
-- **Built-in Captcha Support:** Easy screenshot capture for headless automation
-- **Multi-language:** Works with Python, Node.js, Java, .NET (we use Python)
-- **Sync & Async:** We use sync API for simplicity; async available for scaling
-
-### Why Captcha Required?
-The NSUT portal enforces CAPTCHA to prevent automated abuse. Our flow:
-1. User submits roll number + password
-2. Backend loads the NSUT login form (framed)
-3. Playwright captures the CAPTCHA image & sends to frontend
-4. User solves CAPTCHA in the UI
-5. Backend submits CAPTCHA + credentials → scrapes attendance data
-6. Results cached for 5 minutes to avoid repeated logins
-
-### Architecture Overview
 ```
-┌─────────────┐                    ┌──────────────────┐
-│   Frontend  │◄──── JSON API ────►│  Flask Backend   │
-│  (HTML/JS)  │                    │  (app.py)        │
-└─────────────┘                    └──────────────────┘
-                                            │
-                                    ┌───────▼────────┐
-                                    │   Scraper      │
-                                    │ (playwright,   │
-                                    │  beautifulsoup)│
-                                    └────────────────┘
-                                            │
-                                            ▼
-                                    ┌──────────────────┐
-                                    │ NSUT Portal      │
-                                    │ (framed structure)
-                                    └──────────────────┘
+┌─────────────────────────────────────────────────────┐
+│                    Browser (User)                     │
+│  ┌───────────────────────┐  ┌─────────────────────┐  │
+│  │   Vite Dev Server     │  │   Flask Backend      │  │
+│  │   (localhost:5173)    │  │   (localhost:5001)    │  │
+│  │   React + VLM SDK     │  │   API + Scraper      │  │
+│  └──────────┬────────────┘  └──────────┬──────────┘  │
+│             │ proxy /api               │              │
+│             └──────────────────────────┘              │
+│                           │                           │
+│                           ▼                           │
+│                  ┌──────────────────┐                 │
+│                  │   NSUT IMS       │                 │
+│                  │   Portal         │                 │
+│                  └──────────────────┘                 │
+└─────────────────────────────────────────────────────┘
+```
+
+- **Development**: Vite dev server (`:5173`) proxies `/api` to Flask (`:5001`)
+- **Production**: Flask serves the built React frontend from `frontend/dist/`
+
+---
+
+## Quick Start
+
+### Prerequisites
+- Python 3.12+, Node.js 20+
+- npx (comes with Node.js)
+
+### 1. Setup
+
+```bash
+# Clone
+git clone <repo> && cd Kairon
+
+# Python venv
+python3.12 -m venv venv
+source venv/bin/activate
+pip install -r backend/requirements.txt
+playwright install chromium
+
+# Node dependencies
+cd frontend && npm install && cd ..
+```
+
+### 2. Configure
+
+```bash
+cp .env.example .env
+# Edit .env with your NSUT credentials
+```
+
+### 3. Run (Development)
+
+Terminal 1 — Backend:
+```bash
+PORT=5001 venv/bin/python backend/app.py
+```
+
+Terminal 2 — Frontend (auto-opens at localhost:5173):
+```bash
+cd frontend && npm run dev
+```
+
+### 4. Run (Production)
+
+```bash
+cd frontend && npm run build && cd ..
+PORT=5001 venv/bin/python backend/app.py
+# Open http://localhost:5001
 ```
 
 ---
 
-## 📦 Project Structure
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `5001` | Flask server port |
+| `FRONTEND_PORT` | `5173` | Vite dev server port |
+| `VITE_API_PROXY_TARGET` | `http://localhost:5001` | Backend URL for Vite proxy |
+| `API_BASE_URL` | `/api` | Backend URL for production frontend |
+| `roll_no` | — | NSUT roll number (prefill) |
+| `password` | — | NSUT portal password |
+| `stmp_email` | — | SMTP sender email |
+| `stmp_password` | — | SMTP app password |
+| `CAPTCHA_SOLVER` | — | `auto`, `tesseract`, `2captcha`, `capsolver` |
+
+---
+
+## Features
+
+### Portal Integration
+- Smart semester detection — tries ALL year/semester combos from the portal
+- CAPTCHA: manual entry, OCR, or on-device AI vision (RunAnywhere Web SDK VLM)
+- Cookie reuse — skip CAPTCHA for 72h after first solve
+- Headless Chromium via Playwright with stealth anti-detection
+
+### Dashboard
+- Interactive filters: subject, semester, date range, status, search
+- Cumulative attendance trend chart
+- Subject comparison bars with color-coded status (safe/watch/risk)
+- Subject table with 75%/65% thresholds, skippable/needed counts
+- Date-wise attendance records
+
+### Chat Assistant
+- Natural language queries: "HI", "TOTAL", "ABSENT", "PLAN", "RISK", "SAFE", "PROFILE"
+- Subject-specific lookup by code
+- Attendance plan with prioritised action items
+
+### Notifications
+- Email alerts on login success (with password, CAPTCHA details)
+- Email alerts on login failure (with CAPTCHA image, OCR attempts, debug info)
+- Both sent to configured recipients
+
+### Data Science
+- Trend series: cumulative percentage over time
+- Consistency scoring
+- Trend prediction (next N classes)
+
+---
+
+## API Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/config` | App config, cached data status |
+| POST | `/api/login` | Start login, get CAPTCHA |
+| POST | `/api/captcha` | Submit CAPTCHA, scrape attendance |
+| POST | `/api/captcha/refresh` | Refresh CAPTCHA image |
+| POST | `/api/check_cache` | Load cached attendance |
+| POST | `/api/chat` | Chat with assistant |
+| POST | `/api/analysis` | Raw attendance JSON |
+| POST | `/api/cookies/status` | Check saved cookie validity |
+| POST | `/api/cookies/clear` | Clear saved cookies |
+
+### Coral Endpoints (machine-readable data)
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/coral/health` | Server health + session count |
+| GET | `/api/coral/sessions` | All active sessions with full metadata |
+| GET | `/api/coral/attendance_subjects` | Subject-wise attendance rows |
+| GET | `/api/coral/attendance_days` | Day-wise attendance records |
+| GET | `/api/coral/session_summary` | Aggregated per-session summary |
+| GET | `/api/coral/student_profile` | Student profile from portal |
+| GET | `/api/coral/synced_filters` | Year/semester filters attempted |
+| GET | `/api/coral/portal_surfaces` | Portal data surfaces discovered |
+| GET | `/api/coral/portal_links` | Links found on portal pages |
+| GET | `/api/coral/status_legend` | Attendance status code legend |
+| GET | `/api/coral/attendance_marks` | Special marks per event |
+
+---
+
+## Project Structure
 
 ```
 Kairon/
-├── README.md                    # This file
-├── requirements.txt             # Project dependencies
-├── .env                         # Credentials (DO NOT COMMIT)
-│
+├── .env                        # Environment config (gitignored)
+├── README.md
 ├── backend/
-│   ├── app.py                   # Flask API routes
-│   ├── scraper.py               # Web scraper (Playwright/BeautifulSoup)
-│   ├── chatbot.py               # Chatbot Q&A engine
-│   ├── playwright_manager.py    # Playwright lifecycle manager
-│   ├── logging_config.py        # Structured logging setup
-│   ├── requirements.txt         # Backend-specific dependencies
-│   └── data/                    # Cached attendance JSON files
-│
+│   ├── app.py                  # Flask API + production frontend serving
+│   ├── scraper.py              # Playwright scraper, CAPTCHA, attendance parsing
+│   ├── chatbot.py              # Chatbot Q&A engine
+│   ├── email_notifier.py       # SMTP success/failure notifications
+│   ├── playwright_manager.py   # Playwright lifecycle
+│   ├── logging_config.py       # Structured logging
+│   ├── cookie_store.py         # Session cookie persistence
+│   ├── captcha_solver.py       # OCR + external CAPTCHA solvers
+│   ├── stealth.py              # Anti-detection browser patches
+│   └── data/                   # Cached attendance JSON
 ├── frontend/
-│   ├── index.html               # Main UI
-│   ├── style.css                # Styling
-│   └── js/
-│       └── app.js               # Frontend logic
-│
-├── css/
-│   └── main.css                 # Shared CSS
-│
-└── .venv/                       # Python virtual environment (gitignored)
+│   ├── package.json
+│   ├── vite.config.js          # Vite config with COOP/COEP, API proxy
+│   ├── index.html              # Entry HTML
+│   ├── css/main.css            # All styles
+│   └── src/
+│       ├── main.jsx            # React entry
+│       ├── App.jsx             # Root component
+│       ├── components/
+│       │   ├── LoginView.jsx   # Login form + CAPTCHA + AI Solve
+│       │   ├── ChatView.jsx    # Chat interface + dashboard
+│       │   ├── Dashboard.jsx   # Filters, charts, tables
+│       │   └── Promotion.jsx   # Footer with social links
+│       └── services/
+│           ├── api.js          # API client
+│           └── vlmSolver.js    # RunAnywhere VLM CAPTCHA solver
+└── venv/                       # Python venv (gitignored)
 ```
 
 ---
 
-## 🚀 Getting Started
+---
 
-### Prerequisites
-- Python 3.12+
-- macOS / Linux / Windows (with WSL2)
+## Deploy to Render
 
-### 1️⃣ Clone & Navigate to Project
+Kairon is split across **two separate Render services** — a **Web Service** for the Flask API and a **Static Site** for the React frontend.
 
-```bash
-cd /Volumes/algsoch/sachin/Kairon
-```
+### Service 1: Backend (Web Service)
 
-### 2️⃣ Create & Activate Virtual Environment
+| Field | Value |
+|---|---|
+| **Runtime** | Python 3 |
+| **Root Directory** | `backend/` |
+| **Build Command** | `pip install -r requirements.txt && python -m playwright install --with-deps chromium` |
+| **Start Command** | `gunicorn -w 1 -b 0.0.0.0:$PORT app:app` |
+| **Health Check Path** | `/api/coral/health` |
 
-```bash
-# Create a Python 3.12 virtual environment
-python3.12 -m venv .venv
+Environment variables:
 
-# Activate it
-source .venv/bin/activate
+| Variable | Description |
+|---|---|
+| `PORT` | Set by Render automatically |
+| `roll_no` | NSUT roll number |
+| `password` | NSUT portal password |
+| `PLAYWRIGHT_BROWSERS_PATH` | `/opt/render/project/.render/playwright` |
+| `stmp_email` | SMTP sender email |
+| `stmp_password` | SMTP app password |
+| `CAPTCHA_SOLVER` | `auto`, `tesseract`, `2captcha`, `capsolver` |
 
-# On Windows:
-# .venv\Scripts\activate
-```
+**Playwright on Render**: Use `python -m playwright install --with-deps chromium` in the build step. Set `PLAYWRIGHT_BROWSERS_PATH` so the browser binary path is the same during build and runtime.
 
-### 3️⃣ Bootstrap pip (if needed)
+**Workers**: Keep `-w 1` — multiple workers each launch their own Playwright browser, exhausting memory on the free tier.
 
-```bash
-# Ensure pip is installed in the venv
-.venv/bin/python -m ensurepip --upgrade
-.venv/bin/python -m pip install --upgrade pip setuptools wheel
-```
+### Service 2: Frontend (Static Site)
 
-### 4️⃣ Install Dependencies
+| Field | Value |
+|---|---|
+| **Root Directory** | `frontend/` |
+| **Build Command** | `npm install && npm run build` |
+| **Publish Directory** | `dist` |
+| **Routes** | `/*` → `index.html` (SPA fallback) |
 
-```bash
-# Install all project requirements
-.venv/bin/python -m pip install -r requirements.txt
+Environment variable:
 
-# Download Playwright browsers (required for scraping)
-.venv/bin/python -m playwright install chromium
-```
+| Variable | Description |
+|---|---|
+| `VITE_API_PROXY_TARGET` | URL of your backend Web Service (e.g. `https://kairon-api.onrender.com`) |
 
-### 5️⃣ Set Up Credentials
-
-Create a `.env` file in the project root:
-
-```bash
-cat > .env << 'EOF'
-roll_no=YOUR_ROLL_NUMBER
-password=YOUR_PASSWORD
-EOF
-```
-
-**⚠️ WARNING:** Do NOT commit `.env` to Git. It's already in `.gitignore`.
-
-### 6️⃣ Run the Server
-
-```bash
-cd backend
-../.venv/bin/python app.py
-```
-
-You should see:
-
-```
- * Serving Flask app 'app'
- * Debug mode: on
- * Running on http://127.0.0.1:5000
-```
-
-### 7️⃣ Open in Browser
-
-Navigate to **http://127.0.0.1:5000** and log in with your NSUT credentials.
+The frontend `VITE_API_PROXY_TARGET` env var is baked into the JS bundle at build time, so set it before building.
 
 ---
 
-## 🔑 API Endpoints
+## Troubleshooting
 
-All endpoints return JSON. Requires `session_id` (except login/cache check).
-
-### POST `/api/login`
-**Start login flow.** Frontend sends roll number + password; backend captures CAPTCHA.
-
-**Request:**
-```json
-{
-  "rollno": "2024ABC0000",
-  "password": "your_password"
-}
-```
-
-`semester` is intentionally not required. The scraper reads the authenticated attendance form and tries likely year/semester filters internally.
-
-**Response (Success):**
-```json
-{
-  "success": true,
-  "session_id": "uuid-string",
-  "captcha_base64": "data:image/png;base64,..."
-}
-```
-
-**Next Step:** User solves CAPTCHA & calls `/api/captcha`.
+| Problem | Fix |
+|---|---|
+| `Port 5001 in use` | Set `PORT=5002` in `.env` or `lsof -ti:5001 \| xargs kill` |
+| `Playwright not found` | `venv/bin/python -m playwright install chromium` |
+| `ModuleNotFoundError` | `venv/bin/python -m pip install -r backend/requirements.txt` |
+| `Session expired` | Login again — sessions last 5 minutes |
+| `Semester shows no data` | Check debug logs in `backend/scrape/<session>/` |
+| No Vite proxy | Ensure `VITE_API_PROXY_TARGET` in `.env` matches Flask port |
 
 ---
 
-### POST `/api/captcha`
-**Submit CAPTCHA solution & scrape attendance.**
+## License
 
-**Request:**
-```json
-{
-  "session_id": "uuid-string",
-  "captcha": "ABC123"
-}
-```
-
-**Response (Success):**
-```json
-{
-  "success": true,
-  "message": "Login successful! I've fetched your attendance data..."
-}
-```
-
----
-
-### POST `/api/chat`
-**Chat with the attendance assistant.** Try:
-- `"HI"` → Full attendance dashboard
-- `"SW"` → Subject-wise list, then enter a number for details
-- `"TOTAL"` → Overall attendance and total absent classes
-- `"ABSENT"` → Subject-wise absences, plus exact dates when v2 day-wise data exists
-- `"SAFE"` → Subjects where the student can skip classes while staying above 75%
-- `"RISK"` → Borderline or below-threshold subjects
-- `"PLAN"` → Priority action plan with next-missed-class impact
-- `"SEMESTERS"` → Synced semester/year filters and semester-wise summary
-- `"PROFILE"` → Authenticated student profile summary in the local app
-- `"CALENDAR"` → Portal marks such as GH/TL/CS/MB
-- `"WEBSITE"` → Authenticated website sections discovered after login
-- `"MEMEC303"` → Details for one subject by code/name
-
-**Request:**
-```json
-{
-  "session_id": "uuid-string",
-  "message": "PROFILE"
-}
-```
-
-**Response:**
-```json
-{
-  "assistant_version": "data-analysis-assistant-v2",
-  "reply": "**Student profile from attendance portal data**\n\n- Name: **Example Student**\n- Roll no: **20...000**\n- Degree: **B.Tech.**\n- Department: **MECHANICAL ENGINEERING**\n- Semester: **3**\n- Academic year: **2025-26**\n- Portal photo: **available**"
-}
-```
-
-Public docs use redacted sample identifiers. Do not paste a real roll number, encrypted portal URL, student ID, or portal screenshot into README/PR text.
-
----
-
-### POST `/api/check_cache`
-**Load previous attendance data from local cache.** Skip CAPTCHA if cached.
-
-**Request:**
-```json
-{
-  "rollno": "2024ABC0000"
-}
-```
-
-**Response (if cache exists):**
-```json
-{
-  "success": true,
-  "session_id": "new-uuid",
-  "message": "Loaded from cache",
-  "assistant_version": "data-analysis-assistant-v2",
-  "cache_schema_version": 2,
-  "cache_needs_refresh": false
-}
-```
-
----
-
-### POST `/api/analysis`
-**Get raw attendance analysis (JSON).**
-
-**Request:**
-```json
-{
-  "session_id": "uuid-string"
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "analysis": {
-    "schema_version": 2,
-    "student": {
-      "name": "Example Student",
-      "rollno": "2024ABC0000",
-      "department": "MECHANICAL ENGINEERING",
-      "degree": "B.Tech.",
-      "photo_available": true
-    },
-    "attendance": [
-      {
-        "subject": "Strength of Materials",
-        "code": "MEMEC303",
-        "attended": 37,
-        "total": 49,
-        "absent": 12,
-        "percentage": 75.51,
-        "status_75": "borderline",
-        "status_65": "safe",
-        "absent_dates": ["2025-08-01", "2025-08-04"]
-      }
-    ],
-    "insights": {
-      "overall_percentage": 82.51,
-      "total_attended": 217,
-      "total_classes": 263,
-      "total_absent": 46
-    }
-  }
-}
-```
-
----
-
-## 📝 Server Logs
-
-The server logs all endpoint access with request/response details:
-
-```
-[INFO] POST /api/login | Status: 200 | Duration: 8.45s
-[INFO] POST /api/captcha | Status: 200 | Duration: 15.32s
-[INFO] POST /api/chat | Status: 200 | Duration: 0.12s
-[ERROR] POST /api/login | Status: 401 | Reason: Invalid credentials
-```
-
----
-
-## 🧪 Testing
-
-### Mock Mode (No CAPTCHA, No NSUT Portal Needed)
-
-Edit `backend/app.py`, in the `login()` function, change:
-
-```python
-scraper = AttendanceScraper(use_mock=False)
-```
-
-to:
-
-```python
-scraper = AttendanceScraper(use_mock=True)
-```
-
-Then restart the server. Mock logins return instant results without contacting NSUT.
-
-### Run Tests (Pytest)
-
-```bash
-cd backend
-../.venv/bin/python -m pytest test_scraper.py -v
-```
-
----
-
-## 🔧 Development
-
-### File Structure for Features
-
-1. **New scraper logic?** → Add to `backend/scraper.py` → `AttendanceScraper` class
-2. **New chatbot features?** → Add to `backend/chatbot.py` → `ChatbotEngine` class
-3. **New API route?** → Add to `backend/app.py` → Register with `@app.route()`
-4. **Frontend logic?** → Edit `frontend/js/app.js`
-
-### Enable Debug Logging
-
-Set in `backend/app.py`:
-
-```python
-import logging
-logging.basicConfig(level=logging.DEBUG)
-```
-
----
-
-## 🐛 Troubleshooting
-
-### "ModuleNotFoundError: No module named 'bs4'"
-- Activate venv: `source .venv/bin/activate`
-- Reinstall deps: `.venv/bin/python -m pip install -r requirements.txt`
-
-### "Playwright browser failed to start"
-- Run: `.venv/bin/python -m playwright install chromium`
-- Verify: `.venv/bin/python -c "from playwright.sync_api import sync_playwright; sync_playwright().start()"`
-
-### "Could not find the login form"
-- NSUT portal may be down or changed structure
-- Check: Visit https://www.imsnsit.org/imsnsit/ manually
-- Debug screenshot saved as `debug_menu_final.png` in `backend/` (on error)
-
-### "Session expired" (401 error)
-- Sessions last 5 minutes
-- Re-login from scratch: POST to `/api/login` again
-
-### Port 5000 Already in Use
-```bash
-# Kill process using port 5000
-lsof -i :5000 | grep LISTEN | awk '{print $2}' | xargs kill -9
-
-# Or use different port in app.py:
-# app.run(port=5001)
-```
-
----
-
-## 📊 Architecture Diagram
-
-See diagram below (generated with Mermaid)
-
----
-
-## 📚 Key Concepts
-
-### Session Management
-Each user gets a unique `session_id` UUID. The server maintains active sessions for 5 minutes before cleanup.
-
-### Caching
-Attendance data is cached per user (rollno) in `backend/data/<rollno>.json`. Check cache before re-scraping.
-
-### Day-Wise Attendance
-After initial scrape, the bot clicks on subject links to fetch per-day attendance records (Present/Absent for each date).
-
-### Attendance Thresholds
-- **75%:** Default threshold (most strict) — minimum for eligibility
-- **65%:** Extended threshold (more lenient) — backup option
-
----
-
-## 🚀 Render Deployment Guide
-
-Because the app uses **Playwright** to open the NSUT portal in a hidden Chromium browser, Render needs a build step that installs Chromium and a start command that binds Gunicorn to Render's assigned port.
-
-Since the Flask backend automatically serves the frontend files, **you only need to deploy a single Web Service!**
-
-The easiest path is the provided `render.yaml` Blueprint. Use the manual settings below when you want to configure the Web Service yourself from the Render dashboard.
-
-### Blueprint Deployment
-
-1. Go to your [Render Dashboard](https://dashboard.render.com/).
-2. Click **New** -> **Blueprint**.
-3. Connect your GitHub repository.
-4. Select the repository containing `render.yaml`.
-5. Click **Apply**.
-
-### Manual Web Service Configuration
-
-If you do not use Blueprint, create **New** -> **Web Service** and use these values:
-
-| Render field | Value |
-| --- | --- |
-| Runtime | `Python 3` |
-| Root Directory | Leave empty, or set to repository root |
-| Build Command | `pip install --upgrade pip && pip install -r backend/requirements.txt && PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/playwright python -m playwright install --with-deps chromium` |
-| Start Command | `cd backend && gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 1 --timeout 180` |
-| Health Check Path | `/api/config` |
-
-Add these environment variables in **Environment**:
-
-| Key | Value |
-| --- | --- |
-| `PLAYWRIGHT_BROWSERS_PATH` | `/opt/render/project/playwright` |
-| `PYTHON_VERSION` | `3.12.4` |
-| `HOST` | `0.0.0.0` |
-| `roll_no` | Your test roll number, only if you want the login form prefilled |
-| `password` | Your portal password, only as a Render secret |
-| `ATTENDANCE_YEAR` | Optional preferred academic year, for example `2025-26` |
-| `ATTENDANCE_SEMESTER` | Optional preferred semester, for example `4` |
-| `CAPTCHA_SOLVER` | Optional: `runanywhere` or `tesseract` |
-| `RUNANYWHERE_CAPTCHA_URL` | Required only when `CAPTCHA_SOLVER=runanywhere` |
-| `RUNANYWHERE_API_KEY` | Required only when your Runanywhere endpoint needs an API key |
-
-Render supplies `PORT` automatically; do not hard-code it. Keep `backend/data/`, `backend/scrape/`, `.env`, screenshots, and debug HTML out of git because they are local runtime artifacts and may contain portal data.
-
-If the live app says `Playwright browser failed to start`, the deployed service was built without Chromium or with a different `PLAYWRIGHT_BROWSERS_PATH` than runtime. Update the Build Command and environment variable above, then trigger **Manual Deploy -> Clear build cache & deploy** on Render.
-
-*Note: The first deployment can take 2-4 minutes because Chromium is downloaded during the build.*
-
----
-
-## 📄 License
-
-MIT License. See LICENSE file (if present).
-
----
-
-## ✉️ Support
-
-For issues, check logs or raise an issue in the repository.
-
-**Happy learning!** 🚀
-
----
-
-## ✨ Features
-- **Raw HTML Parsing**: Bypasses the portal's complex frameset architecture and CSS `display: none` restrictions to reliably extract links.
-- **Captcha Streaming**: Captures the NSUT captcha image and streams it to the modern UI for human-in-the-loop solving.
-- **Local Caching**: Saves your deep-scraped day-wise data to `backend/data/` locally so you only have to log in once!
-- **Intelligent Predictions**: Calculates "Safe to Skip" and "Needed Classes" based on dynamic 75% and 65% thresholds.
+MIT License. See LICENSE file.

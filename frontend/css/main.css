@@ -20,17 +20,16 @@ body {
     min-height: 100vh;
     display: flex;
     justify-content: center;
-    align-items: flex-start;
     padding: 1rem;
 }
 
 #app {
     width: 100%;
     max-width: 1180px;
-    height: min(92vh, 980px);
-    min-height: 640px;
     display: flex;
     flex-direction: column;
+    height: calc(100vh - 2rem);
+    max-height: calc(100vh - 2rem);
 }
 
 .glass-panel {
@@ -41,6 +40,10 @@ body {
     border-radius: 8px;
     box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
     overflow: hidden;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
 }
 
 /* Auth View */
@@ -54,6 +57,7 @@ body {
     margin: auto;
     max-height: 90vh;
     overflow-y: auto;
+    flex: 0 1 auto;
 }
 
 .auth-container::-webkit-scrollbar {
@@ -236,7 +240,7 @@ button:hover {
     flex: 1;
     min-height: 0;
     display: grid;
-    grid-template-columns: minmax(0, 1.35fr) minmax(340px, 0.85fr);
+    grid-template-columns: minmax(0, 1.35fr) minmax(0, 0.85fr);
 }
 
 .dashboard-panel {
@@ -260,14 +264,20 @@ button:hover {
     padding: 1rem;
     display: flex;
     flex-direction: column;
-    gap: 1rem;
+    gap: 0.75rem;
+    justify-content: flex-start;
 }
 
 .quick-actions {
     display: flex;
-    gap: 0.5rem;
-    padding: 0 1rem 0.85rem;
+    gap: 0.4rem;
+    padding: 0 1rem 0.6rem;
     overflow-x: auto;
+}
+
+#typingIndicator {
+    user-select: none;
+    pointer-events: none;
 }
 
 .quick-chip {
@@ -288,11 +298,12 @@ button:hover {
 
 .message {
     max-width: 88%;
-    padding: 1rem 1.2rem;
+    padding: 0.65rem 0.9rem;
     border-radius: 8px;
     line-height: 1.5;
     animation: fadeIn 0.3s ease;
     overflow-wrap: anywhere;
+    font-size: 0.92rem;
 }
 
 .message.bot {
@@ -321,10 +332,10 @@ button:hover {
 }
 
 .chat-input-area {
-    padding: 1rem;
+    padding: 0.65rem 1rem;
     border-top: 1px solid var(--glass-border);
     display: flex;
-    gap: 1rem;
+    gap: 0.65rem;
 }
 
 .chat-input-area input {
@@ -450,7 +461,7 @@ button:hover {
 
 .dashboard-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1.15fr) minmax(260px, 0.85fr);
+    grid-template-columns: 1fr 1fr;
     gap: 0.75rem;
     margin-bottom: 0.75rem;
 }
@@ -531,7 +542,8 @@ button:hover {
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--text-primary);
-    font-size: 0.86rem;
+    font-size: 0.82rem;
+    max-width: 70%;
 }
 
 .bar-label strong {
@@ -628,6 +640,86 @@ button:hover {
     font-size: 0.9rem;
 }
 
+/* Chat Ad Message */
+.message-ad {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    padding: 0.7rem 0.85rem;
+    border-radius: 10px;
+    text-decoration: none;
+    color: var(--text-primary);
+    transition: all 0.25s ease;
+    position: relative;
+    border: 1px solid rgba(236, 72, 153, 0.18);
+    background: linear-gradient(135deg, rgba(236, 72, 153, 0.06), rgba(251, 146, 60, 0.06));
+    max-width: 100%;
+    margin-top: 0.25rem;
+    animation: fadeIn 0.3s ease;
+}
+
+.message-ad.ad-blue {
+    border-color: rgba(59, 130, 246, 0.18);
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.06), rgba(139, 92, 246, 0.06));
+}
+
+.message-ad:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(236, 72, 153, 0.08);
+}
+
+.message-ad.ad-blue:hover {
+    box-shadow: 0 4px 16px rgba(59, 130, 246, 0.08);
+}
+
+.message-ad-badge {
+    position: absolute;
+    top: 5px;
+    right: 7px;
+    font-size: 0.5rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--text-secondary);
+    opacity: 0.45;
+}
+
+.message-ad-emoji {
+    font-size: 1.5rem;
+    flex: 0 0 auto;
+    opacity: 0.7;
+}
+
+.message-ad-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+}
+
+.message-ad-title {
+    font-size: 0.82rem;
+    color: var(--text-primary);
+}
+
+.message-ad-desc {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    line-height: 1.3;
+}
+
+.message-ad-cta {
+    font-size: 0.68rem;
+    font-weight: 700;
+    color: #f472b6;
+    margin-top: 0.1rem;
+}
+
+.ad-blue .message-ad-cta {
+    color: #818cf8;
+}
+
 @media (max-width: 1180px) {
     #app {
         height: auto;
@@ -646,7 +738,7 @@ button:hover {
     }
 
     .chat-panel {
-        min-height: 560px;
+        min-height: 0;
     }
 }
 
@@ -681,6 +773,23 @@ button:hover {
 @media (max-width: 540px) {
     #app {
         min-height: calc(100vh - 1rem);
+        height: auto;
+    }
+
+    .auth-container {
+        padding: 1.25rem;
+        width: 100%;
+        max-width: none;
+        max-height: none;
+    }
+
+    .auth-container h1 {
+        font-size: 1.5rem;
+    }
+
+    input, select, button {
+        padding: 0.75rem;
+        font-size: 0.9rem;
     }
 
     .filter-grid,
@@ -695,16 +804,293 @@ button:hover {
 
     .message {
         max-width: 100%;
+        padding: 0.75rem 1rem;
+        font-size: 0.9rem;
     }
 
     .chat-panel {
-        min-height: 500px;
+        min-height: 300px;
+    }
+
+    .chat-header {
+        padding: 0.65rem 0.85rem;
+        flex-wrap: wrap;
+    }
+
+    .student-heading h2 {
+        font-size: 1rem;
+    }
+
+    .chat-subtitle {
+        font-size: 0.78rem;
+    }
+
+    .chat-input-area {
+        padding: 0.65rem;
+        flex-wrap: wrap;
+    }
+
+    .quick-actions {
+        padding: 0 0.65rem 0.65rem;
+    }
+
+    .quick-chip {
+        padding: 0.4rem 0.65rem;
+        font-size: 0.75rem;
+    }
+
+    .metric-card strong {
+        font-size: 1.2rem;
+    }
+
+    .dashboard-panel {
+        padding: 0.65rem;
+    }
+
+    .data-table th,
+    .data-table td {
+        padding: 0.4rem;
+        font-size: 0.75rem;
+    }
+
+    .workspace-body {
+        grid-template-columns: 1fr;
+    }
+
+    .dashboard-panel {
+        border-right: 0;
+        border-bottom: 1px solid var(--glass-border);
+        max-height: none;
+    }
+}
+
+@media (max-width: 400px) {
+    body {
+        padding: 0.25rem;
+    }
+
+    .auth-container {
+        padding: 1rem;
+    }
+
+    .auth-container h1 {
+        font-size: 1.3rem;
+    }
+
+    input, select, button {
+        padding: 0.65rem;
+        font-size: 0.82rem;
+    }
+
+    .chat-header {
+        padding: 0.5rem 0.65rem;
+    }
+
+    .chat-header button {
+        font-size: 0.78rem;
+        padding: 0.4rem 0.65rem;
+    }
+
+    .chat-messages {
+        padding: 0.65rem;
+    }
+
+    .dashboard-topline {
+        flex-direction: column;
+    }
+
+    .filter-grid {
+        gap: 0.4rem;
     }
 }
 
 @keyframes fadeIn {
     from { opacity: 0; transform: translateY(10px); }
     to { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Floating Ad Panel (top-right corner) ── */
+.promo-float {
+    position: fixed;
+    top: 12px;
+    right: 12px;
+    z-index: 1000;
+    width: 260px;
+    background: rgba(15, 23, 42, 0.92);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid var(--glass-border);
+    border-radius: 10px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+    padding: 0.85rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    animation: slideInRight 0.35s ease;
+}
+
+@keyframes slideInRight {
+    from { opacity: 0; transform: translateX(40px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+.promo-float-close {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    background: none !important;
+    border: none !important;
+    color: var(--text-secondary) !important;
+    font-size: 0.85rem !important;
+    cursor: pointer !important;
+    padding: 2px 6px !important;
+    border-radius: 4px !important;
+    line-height: 1 !important;
+    width: auto !important;
+    min-width: 0 !important;
+    height: auto !important;
+}
+
+.promo-float-close:hover {
+    color: var(--text-primary) !important;
+    background: rgba(255, 255, 255, 0.08) !important;
+}
+
+.promo-float-creator {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+}
+
+.promo-float-avatar {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    flex: 0 0 34px;
+    overflow: hidden;
+    border: 2px solid rgba(255, 255, 255, 0.12);
+    background: linear-gradient(135deg, #c084fc, #3b82f6);
+}
+
+.promo-float-avatar-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.promo-float-avatar-fallback {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-weight: 800;
+    font-size: 0.8rem;
+}
+
+.promo-float-info {
+    min-width: 0;
+}
+
+.promo-float-info strong {
+    font-size: 0.85rem;
+    color: var(--text-primary);
+    display: block;
+}
+
+.promo-float-links {
+    display: flex;
+    gap: 0.25rem;
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    margin-top: 0.1rem;
+}
+
+.promo-float-links a {
+    color: var(--accent);
+    text-decoration: none;
+}
+
+.promo-float-links a:hover {
+    text-decoration: underline;
+}
+
+.promo-float-divider {
+    height: 1px;
+    background: var(--glass-border);
+    margin: 0.1rem 0;
+}
+
+.promo-float-ad {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 0.6rem;
+    border-radius: 8px;
+    text-decoration: none;
+    color: var(--text-primary);
+    transition: all 0.2s;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid transparent;
+}
+
+.promo-float-ad:hover {
+    background: rgba(255, 255, 255, 0.07);
+    border-color: var(--glass-border);
+}
+
+.promo-float-ad-badge {
+    font-size: 0.45rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #fb7185;
+    background: rgba(251, 113, 133, 0.1);
+    padding: 0.1rem 0.35rem;
+    border-radius: 2px;
+    flex: 0 0 auto;
+}
+
+.promo-float-ad-emoji {
+    font-size: 1rem;
+    flex: 0 0 auto;
+}
+
+.promo-float-ad-text {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.68rem;
+    line-height: 1.3;
+    color: var(--text-secondary);
+}
+
+.promo-float-ad-text strong {
+    color: var(--text-primary);
+}
+
+.promo-float-ad-arrow {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    flex: 0 0 auto;
+}
+
+.promo-float-footer {
+    text-align: center;
+    font-size: 0.55rem;
+    color: var(--text-secondary);
+    opacity: 0.4;
+    margin-top: 0.1rem;
+}
+
+@media (max-width: 640px) {
+    .promo-float {
+        top: 8px;
+        right: 8px;
+        width: 220px;
+        padding: 0.65rem;
+    }
 }
 
 .loader {
