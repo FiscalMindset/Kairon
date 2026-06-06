@@ -90,6 +90,10 @@ if SERVE_FRONTEND:
 else:
     print("[DEVELOPMENT] API-only mode. Frontend served by Vite on port 5173")
 
+    @app.route("/favicon.ico")
+    def api_favicon():
+        return "", 204
+
     @app.route("/")
     def api_only_root():
         url = FRONTEND_URL or "http://localhost:5173"
@@ -913,11 +917,18 @@ def analysis():
 
 @app.errorhandler(Exception)
 def _handle_global_error(error):
+    code = getattr(error, "code", 500)
+    msg = (
+        str(error)[:200]
+        if not getattr(error, "description", None)
+        else error.description[:200]
+    )
+    if code == 404:
+        print(f"[WARN] 404 {error}")
+        return jsonify({"success": False, "message": msg}), 404
     print(f"[FATAL] Unhandled exception: {error}")
     _traceback.print_exc()
-    return jsonify(
-        {"success": False, "message": f"Server error: {str(error)[:200]}"}
-    ), 500
+    return jsonify({"success": False, "message": f"Server error: {msg}"}), code
 
 
 if __name__ == "__main__":
