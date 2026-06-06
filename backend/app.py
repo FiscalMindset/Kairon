@@ -15,23 +15,31 @@ CORS(app)
 
 
 def _load_local_env():
-    """Load simple key=value pairs from .env for local testing."""
-    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
-    if not os.path.exists(env_path):
-        return
+    """Load simple key=value pairs from .env files.
 
-    try:
-        with open(env_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                key = key.strip()
-                value = value.strip().strip('"').strip("'")
-                os.environ.setdefault(key, value)
-    except:
-        pass
+    Order (later overrides):
+      1. Root .env (../.env) — dev convenience
+      2. backend/.env — production / Render overrides
+    """
+    candidates = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"),
+    ]
+    for env_path in candidates:
+        if not os.path.exists(env_path):
+            continue
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    key = key.strip()
+                    value = value.strip().strip('"').strip("'")
+                    os.environ.setdefault(key, value)
+        except:
+            pass
 
 
 _load_local_env()

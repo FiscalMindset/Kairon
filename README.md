@@ -134,31 +134,34 @@ Flask automatically serves `frontend/dist/` when `index.html` exists.
 
 ## Environment Variables
 
-### Development (local)
+### File locations
 
-| Where | Variable | Default | Required | Description |
+| File | Purpose | Git |
+|---|---|---|
+| `.env` (root) | Dev convenience — Flask reads this first | ❌ gitignored |
+| `backend/.env` | **Production** — Flask overrides root `.env` values | ❌ gitignored |
+| `backend/.env.example` | Template for `backend/.env` | ✅ committed |
+| `frontend/.env.development` | Vite dev mode — proxy target, port | ✅ committed |
+| `frontend/.env.production` | Vite build mode — `VITE_API_BASE_URL` | ✅ committed |
+| `.env.example` | Template for root `.env` | ✅ committed |
+
+Flask loads `.env` files in order (later overrides): root `.env` → `backend/.env`.
+
+### Variables
+
+| Variable | Set in | Default | Required | Description |
 |---|---|---|---|---|
-| `.env` (root) | `PORT` | `5001` | | Flask server port |
-| `.env` | `roll_no` | — | yes | NSUT roll number |
-| `.env` | `password` | — | yes | NSUT portal password |
-| `.env` | `stmp_email` | — | | SMTP sender for notifications |
-| `.env` | `stmp_password` | — | | SMTP app password |
-| `.env` | `VITE_API_PROXY_TARGET` | `http://localhost:5001` | | Backend URL for Vite dev proxy |
-| `frontend/.env.development` | `VITE_API_PROXY_TARGET` | `http://localhost:5001` | | Overrides root `.env` for Vite |
-| `frontend/.env.development` | `FRONTEND_PORT` | `5173` | | Vite dev server port |
+| `PORT` | `.env` / `backend/.env` | `5001` | | Flask server port |
+| `roll_no` | `.env` / `backend/.env` | — | yes | NSUT roll number |
+| `password` | `.env` / `backend/.env` | — | yes | NSUT portal password |
+| `stmp_email` | `.env` / `backend/.env` | — | | SMTP sender |
+| `stmp_password` | `.env` / `backend/.env` | — | | SMTP app password |
+| `PLAYWRIGHT_BROWSERS_PATH` | `backend/.env` | `0` | | Playwright browser path (Render) |
+| `VITE_API_PROXY_TARGET` | `frontend/.env.development` | `http://localhost:5001` | | Vite dev proxy backend URL |
+| `FRONTEND_PORT` | `frontend/.env.development` | `5173` | | Vite dev server port |
+| `VITE_API_BASE_URL` | `frontend/.env.production` | — | yes* | Backend URL for production build |
 
-### Production (Render)
-
-| Service | Variable | Required | Description |
-|---|---|---|---|
-| **Backend** | `roll_no` | yes | NSUT roll number |
-| | `password` | yes | NSUT portal password |
-| | `stmp_email` | | SMTP sender |
-| | `stmp_password` | | SMTP app password |
-| | `PLAYWRIGHT_BROWSERS_PATH` | yes | `0` or `/opt/render/project/.render/playwright` |
-| **Frontend** | `VITE_API_BASE_URL` | yes | Full backend URL, e.g. `https://kairon-api.onrender.com/api` |
-
-> `VITE_API_BASE_URL` is baked into the JS bundle at build time. Set it in `frontend/.env.production` before running `npm run build`.
+> *`VITE_API_BASE_URL` is required in production. It tells the static frontend where the Flask API lives. Baked into the JS bundle at build time.
 
 ### Vite env loading order
 
@@ -197,7 +200,9 @@ graph LR
 | **Start Command** | `gunicorn -w 1 -b 0.0.0.0:$PORT app:app` |
 | **Health Check** | `/api/coral/health` |
 
-**Required env vars:**
+**Environment variables:**
+
+Set these in Render dashboard, or commit a `backend/.env` file (Render doesn't support file upload in the dashboard — use the dashboard env vars instead):
 
 | Variable | Value |
 |---|---|
@@ -290,7 +295,9 @@ Kairon/
 ├── .env                          # Root env — NSUT credentials, SMTP, Flask port
 ├── .gitignore
 ├── README.md
+├── .env.example                  # Template for local dev (root .env)
 ├── backend/
+│   ├── .env.example              # Template for production (backend/.env)
 │   ├── app.py                    # Flask API routes + production frontend serving
 │   ├── scraper.py                # Playwright scraper, CAPTCHA, attendance parser
 │   ├── chatbot.py                # Chatbot Q&A engine
