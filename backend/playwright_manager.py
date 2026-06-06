@@ -18,6 +18,7 @@ def _browser_args():
         "--disable-accelerated-2d-canvas",
         "--no-first-run",
         "--no-zygote",
+        "--single-process",
         "--disable-extensions",
         "--disable-background-networking",
         "--disable-default-apps",

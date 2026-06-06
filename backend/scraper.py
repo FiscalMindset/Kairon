@@ -583,9 +583,13 @@ class AttendanceScraper:
                 if b is None:
                     detail = get_browser_error()
                     hint = (
-                        "Playwright browser failed to start. On Render, rebuild with "
-                        "`python -m playwright install --with-deps chromium` and keep "
-                        "`PLAYWRIGHT_BROWSERS_PATH` identical during build and runtime."
+                        "Playwright browser failed to start. On Render, ensure "
+                        "`PLAYWRIGHT_BROWSERS_PATH=0` is set and the build command uses "
+                        "`PLAYWRIGHT_BROWSERS_PATH=0 python -m playwright install chromium`. "
+                        "No `--with-deps` (causes su failure). Check build logs for install errors."
+                        f" Detail: {detail}"
+                        if detail
+                        else "Playwright browser failed to start."
                     )
                     raise Exception(f"{hint} Detail: {detail}" if detail else hint)
 
