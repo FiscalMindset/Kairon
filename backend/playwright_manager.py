@@ -19,6 +19,8 @@ def _browser_args():
         "--no-first-run",
         "--no-zygote",
         "--single-process",
+        "--disable-features=site-per-process",
+        "--disable-features=TranslateUI",
         "--disable-extensions",
         "--disable-background-networking",
         "--disable-default-apps",
@@ -27,6 +29,9 @@ def _browser_args():
         "--metrics-recording-only",
         "--mute-audio",
         "--no-default-browser-check",
+        "--js-flags=--max_old_space_size=256",
+        "--renderer-process-limit=1",
+        "--max_old_space_size=256",
     ]
     if stealth.ENABLE_STEALTH:
         args.extend(

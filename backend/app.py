@@ -60,6 +60,8 @@ SERVE_FRONTEND = os.path.isfile(os.path.join(FRONTEND_DIST, "index.html"))
 
 user_sessions = {}
 
+FRONTEND_URL = os.getenv("FRONTEND_URL", "")
+
 if SERVE_FRONTEND:
     print(f"[PRODUCTION] Serving frontend from {FRONTEND_DIST}")
 
@@ -87,6 +89,17 @@ if SERVE_FRONTEND:
         return send_from_directory(FRONTEND_DIST, "index.html")
 else:
     print("[DEVELOPMENT] API-only mode. Frontend served by Vite on port 5173")
+
+    @app.route("/")
+    def api_only_root():
+        url = FRONTEND_URL or "http://localhost:5173"
+        return (
+            f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Kairon API</title>
+<style>body{{font-family:sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#0f0f23;color:#e0e0e0}}a{{color:#64c8ff}}.card{{max-width:500px;padding:2rem;background:rgba(255,255,255,0.05);border-radius:12px;border:1px solid rgba(255,255,255,0.1);text-align:center}}code{{background:rgba(255,255,255,0.1);padding:2px 6px;border-radius:4px;font-size:0.9em}}</style></head>
+<body><div class="card"><h1>⚡ Kairon API</h1><p>This is the <strong>backend API server</strong>. Open the <a href="{url}">frontend →</a> to use the app.</p><p>API endpoints are at <code>/api/*</code>.</p></div></body></html>""",
+            200,
+            {"Content-Type": "text/html; charset=utf-8"},
+        )
 
 
 def _default_rollno():
