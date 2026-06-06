@@ -177,32 +177,38 @@ Only variables prefixed with `VITE_` are exposed to the client bundle.
 
 ## Deploy to Render
 
-Two **separate** Render services are required — the frontend is a static site, the backend is a Python web service.
+The repo includes a [`render.yaml`](./render.yaml) for one-click deployment. Push to a branch, then in Render dashboard:
+
+1. **New Blueprint** → connect your repo → pick `react-migration` (or `main`)
+2. Render reads `render.yaml` and creates two services automatically:
 
 ```mermaid
-graph LR
-    subgraph Render
-        FS[Frontend<br/>Static Site<br/>render.com/static]
-        BS[Backend<br/>Web Service<br/>render.com/web]
+graph TB
+    subgraph Render[render.com]
+        FS[<b>Frontend</b><br/>Static Site<br/>frontend/ → dist]
+        BS[<b>Backend</b><br/>Web Service<br/>gunicorn + Playwright]
     end
-    USER[Browser] --> FS
-    FS -->|fetch /api/*| BS
-    BS -->|Playwright| NSUT[NSUT Portal]
+    USER[Browser] -- "fetch(https://api.onrender.com/api/...)" --> BS
+    USER -- "loads from" --> FS
+    BS --> NSUT[NSUT IMS Portal]
 ```
 
-### Service 1: Backend (Web Service)
+### Services
 
-| Setting | Value |
-|---|---|
-| **Runtime** | Python 3 |
-| **Root Directory** | `backend/` |
-| **Build Command** | `pip install -r requirements.txt && PLAYWRIGHT_BROWSERS_PATH=0 python -m playwright install chromium` |
-| **Start Command** | `gunicorn -w 1 -b 0.0.0.0:$PORT app:app` |
-| **Health Check** | `/api/coral/health` |
+| | Backend | Frontend |
+|---|---|---|
+| **Type** | Web Service | Static Site |
+| **Root** | `backend/` | `frontend/` |
+| **Build** | `pip install -r requirements.txt && PLAYWRIGHT_BROWSERS_PATH=0 python -m playwright install chromium` | `npm install && npm run build` |
+| **Start** | `gunicorn -w 1 -b 0.0.0.0:$PORT app:app --timeout 180` | — |
+| **Publish** | — | `dist` |
+| **Health** | `/api/config` | — |
 
-**Environment variables:**
+### Environment variables
 
-Set these in Render dashboard, or commit a `backend/.env` file (Render doesn't support file upload in the dashboard — use the dashboard env vars instead):
+Set these in the Render dashboard (sensitive ones use `sync: false` in render.yaml so they're never in git):
+
+**Backend (`kairon-api`):**
 
 | Variable | Value |
 |---|---|
@@ -210,47 +216,25 @@ Set these in Render dashboard, or commit a `backend/.env` file (Render doesn't s
 | `roll_no` | your NSUT roll number |
 | `password` | your NSUT portal password |
 
-> `PLAYWRIGHT_BROWSERS_PATH=0` makes Playwright download Chromium to its own package directory instead of system paths. Omit `--with-deps` — Render's Docker image includes the necessary system libraries.
-
-> `-w 1` gunicorn worker only — multiple workers each launch their own Chromium, exhausting memory.
-
-### Service 2: Frontend (Static Site)
-
-| Setting | Value |
-|---|---|
-| **Root Directory** | `frontend/` |
-| **Build Command** | `npm install && npm run build` |
-| **Publish Directory** | `dist` |
-| **Routes** | `/*` → `index.html` (SPA fallback) |
-
-**Required env vars:**
+**Frontend (`kairon-frontend`):**
 
 | Variable | Value |
 |---|---|
-| `VITE_API_BASE_URL` | `https://your-backend.onrender.com/api` |
+| `VITE_API_BASE_URL` | `https://kairon-api.onrender.com/api` |
 
-> This tells the frontend where the backend lives. Without it, the browser tries `fetch('/api/...')` against the static site's own domain, which fails.
+> `PLAYWRIGHT_BROWSERS_PATH=0` makes Playwright download Chromium to its own package directory. No `--with-deps` needed — Render's Docker image includes system libs.
 
-### How frontend-backend connection works
+> `VITE_API_BASE_URL` is baked into the JS bundle at build time. This tells the browser to send API calls directly to the backend URL instead of the static site's own domain.
 
-```
-Browser                          Frontend Static Site          Backend Web Service
- │                                     │                             │
- │  fetch('/api/login') ───────────────┤                             │
- │                                     │  no server-side proxy       │
- │                                     │  (static files only!)       │
- │  ✗ 404                             │                             │
- │                                     │                             │
- │  fetch('https://bs.onrender.com/api/login')                       │
- │  ──────────────────────────────────────────────────────────────→  │
- │  ←─ JSON response ─────────────────────────────────────────────── │
-```
+### Common mistakes
 
-**Without `VITE_API_BASE_URL`**: the browser sends `/api/*` requests to the static site's origin → 404 (static server has no `/api` routes).
-
-**With `VITE_API_BASE_URL`**: the frontend JS uses the full backend URL, so the browser sends requests directly to the backend web service. CORS is enabled on the backend (`flask-cors` allows all origins).
-
-Set `VITE_API_BASE_URL` in `frontend/.env.production` **before building** — Vite inlines environment variables at build time.
+| Symptom | Cause |
+|---|---|
+| Frontend build hangs forever | Build command is `npm run dev` instead of `npm run build` — **fix in dashboard** |
+| Blank page / 404 on frontend | `VITE_API_BASE_URL` not set — frontend fetches `/api/...` against its own domain |
+| Backend 404 on `/` | Expected in API-only mode. Only `/api/*` routes exist. **Root URL is not a page.** |
+| `su: Authentication failure` | Build command uses `--with-deps` in playwright install — **remove it** |
+| Backend crashes on startup | Playwright not installed — check build logs for the install step |
 
 ---
 
