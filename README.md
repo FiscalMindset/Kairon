@@ -159,9 +159,9 @@ Flask loads `.env` files in order (later overrides): root `.env` → `backend/.e
 | `PLAYWRIGHT_BROWSERS_PATH` | `backend/.env` | `0` | | Playwright browser path (Render) |
 | `VITE_API_PROXY_TARGET` | `frontend/.env.development` | `http://localhost:5001` | | Vite dev proxy backend URL |
 | `FRONTEND_PORT` | `frontend/.env.development` | `5173` | | Vite dev server port |
-| `VITE_API_BASE_URL` | `frontend/.env.production` | — | yes* | Backend URL for production build |
+| `VITE_API_BASE_URL` | `frontend/.env.production` | — | yes* | Backend URL for production build (e.g. `https://kairon-2.onrender.com/api`) |
 
-> *`VITE_API_BASE_URL` is required in production. It tells the static frontend where the Flask API lives. Baked into the JS bundle at build time.
+> *`VITE_API_BASE_URL` is required in production. It tells the static frontend where the Flask API lives. **Baked into the JS bundle at build time** — changing it requires a fresh build (`Clear build cache & deploy`).
 
 ### Vite env loading order
 
@@ -224,13 +224,14 @@ Set these in the Render dashboard (sensitive ones use `sync: false` in render.ya
 
 > `PLAYWRIGHT_BROWSERS_PATH=0` makes Playwright download Chromium to its own package directory. No `--with-deps` needed — Render's Docker image includes system libs.
 
-> `VITE_API_BASE_URL` is baked into the JS bundle at build time. This tells the browser to send API calls directly to the backend URL instead of the static site's own domain.
+> ⚠️ **`VITE_API_BASE_URL` is baked into the JS bundle at build time.** If you add/change it after a deploy, you MUST do **Manual Deploy → Clear build cache & deploy** — a regular redeploy reuses the cached build without the new env var.
 
 ### Common mistakes
 
 | Symptom | Cause |
 |---|---|
 | Frontend build hangs forever | Build command is `npm run dev` instead of `npm run build` — **fix in dashboard** |
+| Page loads but button click does nothing | `VITE_API_BASE_URL` was set AFTER the last deploy, or set but not rebuilt. Run **Clear build cache & deploy** |
 | Blank page / 404 on frontend | `VITE_API_BASE_URL` not set — frontend fetches `/api/...` against its own domain |
 | Backend 404 on `/` | Expected in API-only mode. Only `/api/*` routes exist. **Root URL is not a page.** |
 | `su: Authentication failure` | Build command uses `--with-deps` in playwright install — **remove it** |
