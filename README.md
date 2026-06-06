@@ -156,6 +156,7 @@ Flask loads `.env` files in order (later overrides): root `.env` → `backend/.e
 | `password` | `.env` / `backend/.env` | — | yes | NSUT portal password |
 | `stmp_email` | `.env` / `backend/.env` | — | | SMTP sender |
 | `stmp_password` | `.env` / `backend/.env` | — | | SMTP app password |
+| `PYTHON_VERSION` | `backend/.env` | `3.12.4` | yes | Pin Python 3.12 (3.14 breaks Playwright) |
 | `PLAYWRIGHT_BROWSERS_PATH` | `backend/.env` | `0` | | Playwright browser path (Render) |
 | `VITE_API_PROXY_TARGET` | `frontend/.env.development` | `http://localhost:5001` | | Vite dev proxy backend URL |
 | `FRONTEND_PORT` | `frontend/.env.development` | `5173` | | Vite dev server port |

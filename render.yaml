@@ -10,6 +10,8 @@ services:
     rootDir: backend/
     autoDeploy: true
     envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.4"
       - key: PLAYWRIGHT_BROWSERS_PATH
         value: "0"
       - key: roll_no
