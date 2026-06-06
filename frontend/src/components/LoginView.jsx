@@ -3,11 +3,12 @@ import * as api from '../services/api';
 import { loadVlmModel, solveCaptcha, isVlmAvailable, isVlmLoading } from '../services/vlmSolver';
 
 export default function LoginView({ initialRollno, config, onSuccess }) {
-  const [rollnoVal, setRollnoVal] = useState(initialRollno || localStorage.getItem('nsut_rollno') || config.default_rollno || '');
-  const [password, setPassword] = useState(localStorage.getItem('nsut_portal_password') || config.default_password || '');
+  const [rollnoVal, setRollnoVal] = useState(localStorage.getItem('nsut_rollno') || initialRollno || '');
+  const [password, setPassword] = useState(localStorage.getItem('nsut_portal_password') || '');
   const [rememberPwd, setRememberPwd] = useState(!!localStorage.getItem('nsut_portal_password'));
   const [showPwd, setShowPwd] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loginPhase, setLoginPhase] = useState('');
   const [sessionId, setSessionId] = useState(null);
   const [captchaImg, setCaptchaImg] = useState(null);
   const [captchaInput, setCaptchaInput] = useState('');
@@ -17,6 +18,32 @@ export default function LoginView({ initialRollno, config, onSuccess }) {
   const [ocrRunning, setOcrRunning] = useState(false);
   const [vlmStatus, setVlmStatus] = useState('idle');
   const autoOcrTried = useRef(false);
+  const captchaRef = useRef(null);
+
+  const handleVerify = useCallback(async () => {
+    if (!sessionId || !captchaInput.trim()) return;
+    setLoading(true);
+    setLoginPhase('Verifying CAPTCHA and scraping attendance...');
+    setError('');
+    try {
+      const data = await api.submitCaptcha(sessionId, captchaInput.trim(), { rollno: rollnoVal, password });
+      if (data.success) {
+        onSuccess(sessionId, data.data, rollnoVal);
+      } else {
+        setLoading(false);
+        setLoginPhase('');
+        if (data.retryable && data.captcha_base64) {
+          setCaptchaImg(data.captcha_base64);
+          setCaptchaIssuedAt(Date.now());
+        }
+        setError(data.message || 'Verification failed');
+      }
+    } catch (e) {
+      setLoading(false);
+      setLoginPhase('');
+      setError('Error: ' + e.message);
+    }
+  }, [sessionId, captchaInput, rollnoVal, password, onSuccess]);
 
   const handleLogin = useCallback(async () => {
     if (!rollnoVal || !password) {
@@ -24,9 +51,20 @@ export default function LoginView({ initialRollno, config, onSuccess }) {
       return;
     }
     setLoading(true);
+    setLoginPhase('Launching browser on Render (~30s)...');
     setError('');
+
+    const phaseInterval = setInterval(() => {
+      setLoginPhase(prev => {
+        if (prev === 'Launching browser on Render (~30s)...') return 'Loading NSUT portal...';
+        if (prev === 'Loading NSUT portal...') return 'Fetching CAPTCHA from portal...';
+        return prev;
+      });
+    }, 10000);
+
     try {
       const data = await api.login(rollnoVal, password);
+      clearInterval(phaseInterval);
       if (data.success) {
         const sid = data.session_id;
         setSessionId(sid);
@@ -37,49 +75,33 @@ export default function LoginView({ initialRollno, config, onSuccess }) {
           localStorage.removeItem('nsut_portal_password');
         }
         if (data.cookie_reused) {
+          setLoginPhase('Session cookie valid, fetching attendance...');
           const scrapeData = await api.submitCaptcha(sid, '', { rollno: rollnoVal, password });
           if (scrapeData.success) {
             onSuccess(sid, scrapeData.data, data.rollno || rollnoVal);
           } else {
             setLoading(false);
+            setLoginPhase('');
             setError(scrapeData.message || 'Session expired');
           }
         } else {
           setCaptchaImg(data.captcha_base64);
           setCaptchaIssuedAt(Date.now());
           setLoading(false);
+          setLoginPhase('');
         }
       } else {
         setLoading(false);
+        setLoginPhase('');
         setError(data.message || 'Login failed');
       }
     } catch (e) {
+      clearInterval(phaseInterval);
       setLoading(false);
+      setLoginPhase('');
       setError('Network error: ' + e.message);
     }
   }, [rollnoVal, password, rememberPwd, onSuccess]);
-
-  const handleVerify = useCallback(async () => {
-    if (!sessionId || !captchaInput.trim()) return;
-    setLoading(true);
-    setError('');
-    try {
-      const data = await api.submitCaptcha(sessionId, captchaInput.trim(), { rollno: rollnoVal, password });
-      if (data.success) {
-        onSuccess(sessionId, data.data, rollnoVal);
-      } else {
-        setLoading(false);
-        if (data.retryable && data.captcha_base64) {
-          setCaptchaImg(data.captcha_base64);
-          setCaptchaIssuedAt(Date.now());
-        }
-        setError(data.message || 'Verification failed');
-      }
-    } catch (e) {
-      setLoading(false);
-      setError('Error: ' + e.message);
-    }
-  }, [sessionId, captchaInput, rollnoVal, password, onSuccess]);
 
   const handleRefreshCaptcha = useCallback(async () => {
     if (!sessionId) return;
@@ -152,6 +174,12 @@ export default function LoginView({ initialRollno, config, onSuccess }) {
   }, [captchaImg, handleVerify]);
 
   useEffect(() => {
+    if (captchaImg && captchaRef.current) {
+      captchaRef.current.focus();
+    }
+  }, [captchaImg]);
+
+  useEffect(() => {
     if (captchaIssuedAt && Date.now() - captchaIssuedAt > 45000) {
       handleRefreshCaptcha();
     }
@@ -161,13 +189,7 @@ export default function LoginView({ initialRollno, config, onSuccess }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '1rem' }}>
       <img src={captchaImg} alt="CAPTCHA" style={{ borderRadius: 8, border: '1px solid var(--glass-border)' }} />
       <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-        <input
-          type="text"
-          placeholder="Enter Captcha"
-          value={captchaInput}
-          onChange={(e) => setCaptchaInput(e.target.value)}
-          style={{ flex: 1 }}
-        />
+        <input ref={captchaRef} type="text" placeholder="Enter Captcha" value={captchaInput} onChange={(e) => setCaptchaInput(e.target.value)} style={{ flex: 1 }} />
         <button onClick={handleRefreshCaptcha} style={{ flex: 0, padding: '0.5rem 1rem', background: 'rgba(255,220,120,0.25)', border: '1px solid rgba(255,220,120,0.5)', cursor: 'pointer', borderRadius: 8, color: '#ffd166', fontWeight: 'bold' }}>
           ↻
         </button>
@@ -212,11 +234,11 @@ export default function LoginView({ initialRollno, config, onSuccess }) {
       <h1>Attendance Assistant</h1>
       <p style={{ color: 'var(--text-secondary)' }}>Connect once, then use the cached assistant workspace.</p>
       <div className="input-group">
-        <input type="text" placeholder="Roll number" value={rollnoVal} onChange={(e) => setRollnoVal(e.target.value)} />
+        <input type={showPwd ? 'text' : 'password'} placeholder="Roll number" value={rollnoVal} onChange={(e) => setRollnoVal(e.target.value)} />
       </div>
       <div className="input-group password-wrapper">
         <input type={showPwd ? 'text' : 'password'} placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} />
-        <button type="button" className="password-toggle" onClick={() => setShowPwd(!showPwd)} title={showPwd ? 'Hide password' : 'Show password'}>
+        <button type="button" className="password-toggle" onClick={() => setShowPwd(!showPwd)} title={showPwd ? 'Hide fields' : 'Reveal fields'}>
           {showPwd ? '🙈' : '👁'}
         </button>
       </div>
@@ -225,7 +247,7 @@ export default function LoginView({ initialRollno, config, onSuccess }) {
         <span>Remember password on this device</span>
       </label>
       <button onClick={handleLogin} disabled={loading}>
-        {loading ? <span><span className="loader" style={{ width: 16, height: 16, borderWidth: 2, marginRight: 6 }} /> Connecting...</span> : 'Connect to Portal'}
+        {loading ? <span><span className="loader" style={{ width: 16, height: 16, borderWidth: 2, marginRight: 6 }} /> {loginPhase || 'Connecting...'}</span> : 'Connect to Portal'}
       </button>
       {captchaArea}
     </div>
