@@ -44,26 +44,52 @@ const App = {
             .replace(/>/g, '&gt;');
     },
 
+    async autoScrape(rollno, password) {
+        try {
+            const res = await fetch('/api/captcha', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId, captcha: '', cookie_reuse: true, rollno, password })
+            });
+            const data = await res.json();
+
+            if (data.success) {
+                localStorage.setItem('nsut_rollno', rollNo);
+                this.renderChat(data.data);
+                this.addBotMessage("Session reused from saved cookies. " + data.message + "\n\nType **HI** for the full dashboard, **PLAN** for priorities, or **CODES** for shortcuts.");
+            } else {
+                this.renderLogin(rollNo);
+                this.addBotMessage("Saved session expired. Please login again.");
+            }
+        } catch (e) {
+            this.renderLogin(rollNo);
+        }
+    },
+
     async autoOcr() {
         if (autoOcrTried) return;
         autoOcrTried = true;
         const ocrBtn = document.getElementById('autoOcrBtn');
         const verifyBtn = document.getElementById('verifyBtn');
-        const origOcrText = ocrBtn ? ocrBtn.innerHTML : '';
-        const origVerifyText = verifyBtn ? verifyBtn.innerHTML : '';
+        const progressEl = document.getElementById('ocrProgress');
+        const capInput = document.getElementById('captchaInput');
 
-        if (ocrBtn) { ocrBtn.innerHTML = '⏳ OCR...'; ocrBtn.disabled = true; }
-        if (verifyBtn) { verifyBtn.innerHTML = '<div class="loader"></div>'; verifyBtn.disabled = true; }
+        if (ocrBtn) { ocrBtn.disabled = true; }
+        if (verifyBtn) { verifyBtn.disabled = true; }
+        if (progressEl) { progressEl.style.display = 'block'; progressEl.textContent = '⏳ OCR attempt 1/3...'; }
 
+        const roll = document.getElementById('rollno').value;
+        const pwd = document.getElementById('password').value;
         try {
             const res = await fetch('/api/captcha', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ session_id: sessionId, auto_ocr: true })
+                body: JSON.stringify({ session_id: sessionId, auto_ocr: true, rollno: roll, password: pwd })
             });
             const data = await res.json();
 
             if (data.success) {
+                if (progressEl) { progressEl.textContent = '✅ OCR succeeded! Loading dashboard...'; }
                 localStorage.setItem('nsut_rollno', rollNo);
                 this.renderChat(data.data);
                 const warning = data.live_sync_warning
@@ -71,18 +97,27 @@ const App = {
                     : "";
                 this.addBotMessage("CAPTCHA auto-solved with OCR. " + data.message + warning + "\n\nType **HI** for the full dashboard, **PLAN** for priorities, or **CODES** for shortcuts.");
             } else {
-                // OCR failed - show manual input
-                if (ocrBtn) { ocrBtn.innerHTML = origOcrText; ocrBtn.disabled = false; }
-                if (verifyBtn) { verifyBtn.innerHTML = origVerifyText; verifyBtn.disabled = false; }
+                if (data.ocr_attempts && progressEl) {
+                    let lines = ['❌ OCR failed. Attempts:'];
+                    data.ocr_attempts.forEach((t, i) => lines.push(`  ${i+1}. "${t || 'empty'}"`));
+                    lines.push(`Result: ${data.message}`);
+                    progressEl.textContent = lines.join('\n');
+                } else if (progressEl) {
+                    progressEl.textContent = '❌ OCR failed. ' + (data.message || '');
+                }
+                if (capInput) { capInput.placeholder = 'Enter CAPTCHA manually'; }
+                if (ocrBtn) { ocrBtn.innerHTML = '🤖 OCR'; ocrBtn.disabled = false; }
+                if (verifyBtn) { verifyBtn.disabled = false; }
                 if (data.retryable && data.captcha_base64) {
                     document.getElementById('captchaImg').src = data.captcha_base64;
                     captchaIssuedAt = Date.now();
                 }
-                autoOcrTried = false; // allow manual retry
+                autoOcrTried = false;
             }
         } catch (e) {
-            if (ocrBtn) { ocrBtn.innerHTML = origOcrText; ocrBtn.disabled = false; }
-            if (verifyBtn) { verifyBtn.innerHTML = origVerifyText; verifyBtn.disabled = false; }
+            if (progressEl) { progressEl.textContent = '❌ OCR error: ' + e.message; }
+            if (ocrBtn) { ocrBtn.innerHTML = '🤖 OCR'; ocrBtn.disabled = false; }
+            if (verifyBtn) { verifyBtn.disabled = false; }
             autoOcrTried = false;
         }
     },
@@ -597,8 +632,7 @@ const App = {
     },
 
     renderLogin(initialRoll = '') {
-        const savedPassword = localStorage.getItem('nsut_portal_password') || '';
-        const passwordPlaceholder = appConfig.has_saved_password ? 'Password saved in .env' : 'Password';
+        const savedPassword = localStorage.getItem('nsut_portal_password') || appConfig.default_password || '';
         const savedPasswordChecked = savedPassword ? 'checked' : '';
         const savedPasswordValue = this.escapeAttr(savedPassword);
         const savedRollValue = this.escapeAttr(initialRoll || localStorage.getItem('nsut_rollno') || appConfig.default_rollno || '');
@@ -610,8 +644,9 @@ const App = {
                 <div class="input-group">
                     <input type="text" id="rollno" placeholder="Roll number" value="${savedRollValue}">
                 </div>
-                <div class="input-group">
-                    <input type="password" id="password" placeholder="${passwordPlaceholder}" value="${savedPasswordValue}">
+                <div class="input-group password-wrapper">
+                    <input type="password" id="password" placeholder="Password" value="${savedPasswordValue}">
+                    <button type="button" id="togglePassword" class="password-toggle" title="Show password">👁</button>
                 </div>
                 <label class="check-row">
                     <input type="checkbox" id="rememberPassword" ${savedPasswordChecked}>
@@ -620,16 +655,34 @@ const App = {
                 <button id="loginBtn">Connect to Portal</button>
                 <div id="captchaArea" style="display: none; flex-direction: column; gap: 1rem; margin-top: 1rem;">
                     <img id="captchaImg" style="border-radius: 8px; border: 1px solid var(--glass-border);">
-                    <input type="text" id="captchaInput" placeholder="Enter Captcha">
-                       <div style="display: flex; gap: 0.5rem;">
-                           <button id="verifyBtn" style="flex: 1;">Verify & Deep Scrape</button>
-                           <button id="autoOcrBtn" title="Use OCR to automatically read CAPTCHA" style="flex: 0; padding: 0.5rem 1rem; background: rgba(100, 200, 255, 0.3); border: 1px solid rgba(100, 200, 255, 0.5); cursor: pointer; border-radius: 8px; color: #64c8ff; font-weight: bold;">🤖 OCR</button>
-                           <button id="refreshCaptchaBtn" title="Refresh to latest CAPTCHA from portal" style="flex: 0; padding: 0.5rem 1rem; background: rgba(255, 220, 120, 0.25); border: 1px solid rgba(255, 220, 120, 0.5); cursor: pointer; border-radius: 8px; color: #ffd166; font-weight: bold;">↻</button>
-                       </div>
-                       <small style="color: var(--accent)">💡 Tip: Use ↻ before entering CAPTCHA to ensure latest image, then Verify. OCR is optional.</small>
+                    <div style="display: flex; gap: 0.5rem; align-items: center;">
+                        <input type="text" id="captchaInput" placeholder="Enter Captcha" style="flex: 1;">
+                        <button id="refreshCaptchaBtn" style="flex: 0; padding: 0.5rem 1rem; background: rgba(255, 220, 120, 0.25); border: 1px solid rgba(255, 220, 120, 0.5); cursor: pointer; border-radius: 8px; color: #ffd166; font-weight: bold;" title="Refresh CAPTCHA">↻</button>
+                    </div>
+                    <div style="display: flex; gap: 0.5rem;">
+                        <button id="verifyBtn" style="flex: 1;">Verify & Deep Scrape</button>
+                        <button id="autoOcrBtn" style="flex: 0; padding: 0.5rem 1rem; background: rgba(100, 200, 255, 0.3); border: 1px solid rgba(100, 200, 255, 0.5); cursor: pointer; border-radius: 8px; color: #64c8ff; font-weight: bold;">🤖 OCR</button>
+                    </div>
+                    <div id="ocrProgress" style="display: none; color: var(--text-secondary); font-size: 0.85rem; background: rgba(100, 200, 255, 0.1); border: 1px solid rgba(100, 200, 255, 0.2); border-radius: 8px; padding: 0.5rem 1rem; white-space: pre-wrap; font-family: monospace;"></div>
+                    <div id="errorMessage" style="display: none; color: #ff6b6b; background: rgba(255, 107, 107, 0.1); border: 1px solid rgba(255, 107, 107, 0.3); border-radius: 8px; padding: 0.5rem 1rem; font-size: 0.9rem;"></div>
+                    <small style="color: var(--accent)">Enter the CAPTCHA number from the image above, or click 🤖 OCR to auto-read it.</small>
                 </div>
             </div>
         `;
+
+        document.getElementById('togglePassword').addEventListener('click', () => {
+            const pwdInput = document.getElementById('password');
+            const toggle = document.getElementById('togglePassword');
+            if (pwdInput.type === 'password') {
+                pwdInput.type = 'text';
+                toggle.textContent = '🙈';
+                toggle.title = 'Hide password';
+            } else {
+                pwdInput.type = 'password';
+                toggle.textContent = '👁';
+                toggle.title = 'Show password';
+            }
+        });
 
         document.getElementById('loginBtn').addEventListener('click', async () => {
             const btn = document.getElementById('loginBtn');
@@ -656,12 +709,16 @@ const App = {
                     localStorage.removeItem('nsut_portal_password');
                 }
                 autoOcrTried = false;
-                btn.style.display = 'none';
-                document.getElementById('captchaArea').style.display = 'flex';
-                document.getElementById('captchaImg').src = data.captcha_base64;
-                captchaIssuedAt = Date.now();
-                // Auto-run OCR immediately
-                setTimeout(() => this.autoOcr(), 500);
+
+                if (data.cookie_reused) {
+                    btn.innerHTML = '<div class="loader"></div> Reusing session...';
+                    await this.autoScrape(roll, pwd);
+                } else {
+                    btn.style.display = 'none';
+                    document.getElementById('captchaArea').style.display = 'flex';
+                    document.getElementById('captchaImg').src = data.captcha_base64;
+                    captchaIssuedAt = Date.now();
+                }
             } else {
                 btn.innerHTML = 'Connect to Portal';
                 alert(data.message);
@@ -712,9 +769,9 @@ const App = {
                     if (refreshData.success && refreshData.captcha_base64) {
                         document.getElementById('captchaImg').src = refreshData.captcha_base64;
                         document.getElementById('captchaInput').value = '';
+                        document.getElementById('captchaInput').placeholder = 'Enter Captcha';
                         captchaIssuedAt = Date.now();
                         btn.innerHTML = 'Verify & Deep Scrape';
-                        alert('Captcha was refreshed because previous one got old. Please type the new captcha and submit again.');
                         return;
                     }
                 } catch (e) {
@@ -723,10 +780,12 @@ const App = {
             }
             
             const cap = document.getElementById('captchaInput').value;
+            const roll = document.getElementById('rollno').value;
+            const pwd = document.getElementById('password').value;
             const res = await fetch('/api/captcha', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ session_id: sessionId, captcha: cap })
+                body: JSON.stringify({ session_id: sessionId, captcha: cap, rollno: roll, password: pwd })
             });
             const data = await res.json();
             
@@ -743,15 +802,28 @@ const App = {
                     document.getElementById('captchaImg').src = data.captcha_base64;
                     captchaIssuedAt = Date.now();
                 }
-                const dbg = data.debug_dir ? `\n\nDebug folder: ${data.debug_dir}` : '';
-                alert((data.message || 'Verification failed') + dbg);
+                const dbg = data.debug_dir ? `\n[Debug folder: ${data.debug_dir}]` : '';
+                const errMsg = document.getElementById('errorMessage');
+                if (errMsg) {
+                    errMsg.textContent = (data.message || 'Verification failed') + ' ' + dbg;
+                    errMsg.style.display = 'block';
+                } else {
+                    this.addBotMessage("**Login failed:** " + (data.message || 'Verification failed') + dbg + "\n\nPlease refresh the CAPTCHA and try again.");
+                }
             }
         });
        
-           document.getElementById('autoOcrBtn').addEventListener('click', async () => {
-               autoOcrTried = false; // reset so autoOcr can run
-               await this.autoOcr();
-           });
+        document.getElementById('autoOcrBtn').addEventListener('click', async () => {
+            document.getElementById('captchaInput').value = '';
+            document.getElementById('captchaInput').placeholder = 'OCR running...';
+            document.getElementById('autoOcrBtn').disabled = true;
+            document.getElementById('autoOcrBtn').innerHTML = '⏳ OCR...';
+            const progressEl = document.getElementById('ocrProgress');
+            progressEl.style.display = 'block';
+            progressEl.textContent = '⏳ OCR attempt 1/3...';
+            autoOcrTried = false;
+            await this.autoOcr();
+        });
     },
 
     renderChat(analysis = null) {

@@ -1,12 +1,7 @@
-"""Playwright browser manager for the Kairon scraper.
-
-Keeps a single Playwright instance and browser to avoid repeated
-start/stop overhead and provides safe startup/teardown helpers.
-"""
-
 from playwright.sync_api import sync_playwright
 import threading
 import time
+import stealth
 
 _playwright = None
 _browser = None
@@ -15,8 +10,7 @@ _lock = threading.Lock()
 
 
 def _browser_args():
-    """Return stable Chromium launch args for headless environments."""
-    return [
+    args = [
         "--no-sandbox",
         "--disable-dev-shm-usage",
         "--disable-gpu",
@@ -33,10 +27,18 @@ def _browser_args():
         "--mute-audio",
         "--no-default-browser-check",
     ]
+    if stealth.ENABLE_STEALTH:
+        args.extend(
+            [
+                "--disable-blink-features=AutomationControlled",
+                "--disable-automation",
+                "--disable-web-security",
+            ]
+        )
+    return args
 
 
 def _is_browser_alive(browser):
-    """Check if the browser process is still running."""
     try:
         browser.contexts
         return True
@@ -45,7 +47,6 @@ def _is_browser_alive(browser):
 
 
 def _start_playwright():
-    """Start or restart the Playwright runtime."""
     global _playwright
     try:
         if _playwright:
@@ -61,7 +62,6 @@ def _start_playwright():
 
 
 def _launch_browser():
-    """Launch a fresh Chromium browser instance."""
     global _browser, _last_error
     try:
         _browser = _playwright.chromium.launch(
@@ -77,18 +77,11 @@ def _launch_browser():
 
 
 def get_browser():
-    """Return a launched browser instance or None on failure.
-
-    Checks if existing browser is alive before reusing.
-    Retries up to 3 times with backoff on failure.
-    """
     global _playwright, _browser, _last_error
     with _lock:
-        # Reuse existing browser if alive
         if _browser and _is_browser_alive(_browser):
             return _browser
 
-        # Browser is dead or missing — relaunch
         _browser = None
 
         for attempt in range(3):
@@ -100,7 +93,6 @@ def get_browser():
             if _launch_browser():
                 return _browser
 
-            # Failed — restart Playwright runtime for next attempt
             try:
                 _playwright.stop()
             except Exception:
@@ -113,12 +105,10 @@ def get_browser():
 
 
 def get_browser_error():
-    """Return the most recent Playwright launch failure."""
     return _last_error
 
 
 def stop_browser():
-    """Stop and clean up Playwright/browser resources."""
     global _playwright, _browser
     with _lock:
         try:

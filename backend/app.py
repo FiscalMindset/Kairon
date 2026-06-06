@@ -7,6 +7,7 @@ import os
 import json
 import socket
 import uuid
+import cookie_store
 
 app = Flask(__name__)
 CORS(app)
@@ -14,7 +15,7 @@ CORS(app)
 
 def _load_local_env():
     """Load simple key=value pairs from .env for local testing."""
-    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '.env')
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
     if not os.path.exists(env_path):
         return
 
@@ -37,8 +38,10 @@ _load_local_env()
 # Configure logging
 setup_logging(app)
 
-FRONTEND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'frontend')
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
+FRONTEND_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "frontend"
+)
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 APP_VERSION = "data-analysis-assistant-v2"
 
 if not os.path.exists(DATA_DIR):
@@ -47,17 +50,34 @@ if not os.path.exists(DATA_DIR):
 # Map session_id -> { "scraper": AttendanceScraper(), "chatbot": ChatbotEngine() }
 user_sessions = {}
 
+
 def _default_rollno():
-    return os.getenv('roll_no') or os.getenv('ROLL_NO') or ""
+    return (
+        os.getenv("roll_no")
+        or os.getenv("ROLL_NO")
+        or os.getenv("student_id")
+        or os.getenv("STUDENT_ID")
+        or ""
+    )
+
 
 def _default_password():
-    return os.getenv('password') or os.getenv('PASSWORD') or ""
+    return (
+        os.getenv("password")
+        or os.getenv("PASSWORD")
+        or os.getenv("student_password")
+        or os.getenv("STUDENT_PASSWORD")
+        or ""
+    )
+
 
 def _cache_file_for(rollno):
     return os.path.join(DATA_DIR, f"{rollno}.json") if rollno else ""
 
+
 def _cache_schema_version(cached_data):
     return cached_data.get("schema_version", 1) if isinstance(cached_data, dict) else 1
+
 
 def _load_cached_analysis(rollno):
     cache_file = _cache_file_for(rollno)
@@ -65,6 +85,7 @@ def _load_cached_analysis(rollno):
         return None
     with open(cache_file, "r", encoding="utf-8") as f:
         return json.load(f)
+
 
 def _merge_live_profile(analysis, scraper):
     """Attach safe profile hints from the authenticated portal to cached analysis."""
@@ -85,30 +106,36 @@ def _merge_live_profile(analysis, scraper):
         source["profile_source"] = "live_portal"
     return analysis
 
+
 def _create_cached_session(session_id, rollno, cached_data, source_scraper=None):
     scraper = AttendanceScraper(use_mock=True)
     scraper.cached_analysis = cached_data
     chatbot = ChatbotEngine(scraper)
     analysis = chatbot.analysis_payload()
-    analysis = _merge_live_profile(analysis, source_scraper) if source_scraper else analysis
+    analysis = (
+        _merge_live_profile(analysis, source_scraper) if source_scraper else analysis
+    )
     scraper.cached_analysis = analysis
     chatbot = ChatbotEngine(scraper)
     user_sessions[session_id] = {
         "scraper": scraper,
         "chatbot": chatbot,
-        "rollno": rollno
+        "rollno": rollno,
     }
     return analysis, _cache_schema_version(cached_data)
 
-@app.route('/')
-def serve_index():
-    return send_from_directory(FRONTEND_DIR, 'index.html')
 
-@app.route('/<path:filename>')
+@app.route("/")
+def serve_index():
+    return send_from_directory(FRONTEND_DIR, "index.html")
+
+
+@app.route("/<path:filename>")
 def serve_static(filename):
     return send_from_directory(FRONTEND_DIR, filename)
 
-@app.route('/api/config', methods=['GET'])
+
+@app.route("/api/config", methods=["GET"])
 def config():
     rollno = _default_rollno()
     cache_file = _cache_file_for(rollno)
@@ -118,48 +145,64 @@ def config():
             cache_schema_version = _cache_schema_version(_load_cached_analysis(rollno))
         except:
             cache_schema_version = None
-    return jsonify({
-        "assistant_version": APP_VERSION,
-        "default_rollno": rollno,
-        "has_saved_password": bool(_default_password()),
-        "has_cached_data": bool(cache_file and os.path.exists(cache_file)),
-        "cache_schema_version": cache_schema_version,
-        "cache_needs_refresh": bool(cache_schema_version and cache_schema_version < 2),
-    })
+    return jsonify(
+        {
+            "assistant_version": APP_VERSION,
+            "default_rollno": rollno,
+            "has_saved_password": bool(_default_password()),
+            "default_password": _default_password() or "",
+            "has_cached_data": bool(cache_file and os.path.exists(cache_file)),
+            "cache_schema_version": cache_schema_version,
+            "cache_needs_refresh": bool(
+                cache_schema_version and cache_schema_version < 2
+            ),
+        }
+    )
 
-@app.route('/api/login', methods=['POST'])
+
+@app.route("/api/login", methods=["POST"])
 def login():
     data = request.json or {}
-    rollno = data.get('rollno') or _default_rollno()
-    password = data.get('password') or _default_password()
+    rollno = data.get("rollno") or _default_rollno()
+    password = data.get("password") or _default_password()
     if not rollno or not password:
         missing = "roll number" if not rollno else "password"
-        return jsonify({
-            "success": False,
-            "message": f"{missing} required. Enter it once or set it in .env.",
-            "needs_password": not bool(password),
-        }), 400
-    
+        return jsonify(
+            {
+                "success": False,
+                "message": f"{missing} required. Enter it once or set it in .env.",
+                "needs_password": not bool(password),
+            }
+        ), 400
+
     scraper = AttendanceScraper(use_mock=False)
     result = scraper.start_login(rollno, password)
-    
+
     if result.get("success"):
         session_id = result["session_id"]
         user_sessions[session_id] = {
             "scraper": scraper,
             "chatbot": ChatbotEngine(scraper),
-            "rollno": rollno
+            "rollno": rollno,
         }
         result["rollno"] = rollno
+        if result.get("cookie_reused"):
+            result["message"] = "Session cookie reused \u2014 bypassing CAPTCHA"
         return jsonify(result)
     else:
-        return jsonify({"success": False, "message": result.get("message", "Failed to load login page.")}), 401
+        return jsonify(
+            {
+                "success": False,
+                "message": result.get("message", "Failed to load login page."),
+            }
+        ), 401
 
-@app.route('/api/check_cache', methods=['POST'])
+
+@app.route("/api/check_cache", methods=["POST"])
 def check_cache():
     data = request.json or {}
-    rollno = data.get('rollno') or _default_rollno()
-    
+    rollno = data.get("rollno") or _default_rollno()
+
     if not rollno:
         return jsonify({"success": False, "message": "Roll number required"})
 
@@ -167,32 +210,39 @@ def check_cache():
     if os.path.exists(cache_file):
         cached_data = _load_cached_analysis(rollno)
         session_id = str(uuid.uuid4())
-        analysis, cache_schema_version = _create_cached_session(session_id, rollno, cached_data)
-        return jsonify({
-            "success": True,
-            "session_id": session_id,
-            "message": "Loaded from cache",
-            "assistant_version": APP_VERSION,
-            "cache_schema_version": cache_schema_version,
-            "cache_needs_refresh": cache_schema_version < 2,
-            "analysis": analysis
-        })
-    
+        analysis, cache_schema_version = _create_cached_session(
+            session_id, rollno, cached_data
+        )
+        return jsonify(
+            {
+                "success": True,
+                "session_id": session_id,
+                "message": "Loaded from cache",
+                "assistant_version": APP_VERSION,
+                "cache_schema_version": cache_schema_version,
+                "cache_needs_refresh": cache_schema_version < 2,
+                "analysis": analysis,
+            }
+        )
+
     return jsonify({"success": False, "message": "No cache found"})
 
-@app.route('/api/captcha', methods=['POST'])
+
+@app.route("/api/captcha", methods=["POST"])
 def verify_captcha():
     data = request.json or {}
-    session_id = data.get('session_id')
-    captcha_text = data.get('captcha', '').strip()
-    auto_ocr = data.get('auto_ocr', False)
-    
+    session_id = data.get("session_id")
+    captcha_text = data.get("captcha", "").strip()
+    auto_ocr = data.get("auto_ocr", False)
+
     if not session_id:
         return jsonify({"success": False, "message": "session_id required"}), 400
-    
+
     if session_id not in user_sessions:
-        return jsonify({"success": False, "message": "Session expired or invalid."}), 401
-    
+        return jsonify(
+            {"success": False, "message": "Session expired or invalid."}
+        ), 401
+
     scraper = user_sessions[session_id]["scraper"]
     if not scraper.has_session(session_id):
         # Keep app + scraper session stores in sync.
@@ -200,11 +250,21 @@ def verify_captcha():
             del user_sessions[session_id]
         except:
             pass
-        return jsonify({"success": False, "message": "Session expired. Please login again."}), 401
-    
-    # Call scraper with optional OCR
-    result = scraper.submit_captcha_and_scrape(session_id, captcha_text=captcha_text, auto_ocr=auto_ocr)
-    
+        return jsonify(
+            {"success": False, "message": "Session expired. Please login again."}
+        ), 401
+
+    # Pass fresh credentials from frontend so captcha submission uses what the user sees
+    fresh_rollno = data.get("rollno")
+    fresh_password = data.get("password")
+    result = scraper.submit_captcha_and_scrape(
+        session_id,
+        captcha_text=captcha_text,
+        auto_ocr=auto_ocr,
+        override_rollno=fresh_rollno,
+        override_password=fresh_password,
+    )
+
     if result.get("success"):
         # Save to cache
         try:
@@ -213,8 +273,14 @@ def verify_captcha():
                 json.dump(scraper.cached_analysis, f)
         except:
             pass
-        
-        return jsonify({"success": True, "message": "✓ Login successful! Attendance data fetched.", "data": scraper.get_full_analysis()})
+
+        return jsonify(
+            {
+                "success": True,
+                "message": "✓ Login successful! Attendance data fetched.",
+                "data": scraper.get_full_analysis(),
+            }
+        )
     else:
         debug_dir = scraper.get_session_debug_dir(session_id)
         rollno = user_sessions[session_id]["rollno"]
@@ -232,50 +298,60 @@ def verify_captcha():
                         scraper.close_session(session_id)
                     except:
                         pass
-                    return jsonify({
-                        "success": True,
-                        "message": "✓ Login accepted, but the live portal returned an empty attendance report. I loaded the last valid local cache instead.",
-                        "live_sync_warning": "Portal returned no non-zero attendance records for the tested year/semester filters.",
-                        "debug_dir": debug_dir,
-                        "cache_schema_version": cache_schema_version,
-                        "cache_needs_refresh": cache_schema_version < 2,
-                        "data": analysis,
-                    })
+                    return jsonify(
+                        {
+                            "success": True,
+                            "message": "✓ Login accepted, but the live portal returned an empty attendance report. I loaded the last valid local cache instead.",
+                            "live_sync_warning": "Portal returned no non-zero attendance records for the tested year/semester filters.",
+                            "debug_dir": debug_dir,
+                            "cache_schema_version": cache_schema_version,
+                            "cache_needs_refresh": cache_schema_version < 2,
+                            "data": analysis,
+                        }
+                    )
             except:
                 pass
 
         # Retryable failures should keep session alive so user can retry without password.
         if result.get("retryable"):
-            return jsonify({
-                "success": False,
-                "message": result.get("message", "Captcha failed."),
-                "retryable": True,
-                "captcha_base64": result.get("captcha_base64"),
-                "debug_dir": debug_dir
-            }), 401
+            error_msg = result.get("message", "Captcha failed.")
+            print(f"[CAPTCHA] Retryable failure: {error_msg}")
+            return jsonify(
+                {
+                    "success": False,
+                    "message": error_msg,
+                    "retryable": True,
+                    "captcha_base64": result.get("captcha_base64"),
+                    "debug_dir": debug_dir,
+                }
+            ), 401
 
         try:
             del user_sessions[session_id]
         except:
             pass
-        return jsonify({
-            "success": False,
-            "message": result.get("message", "Captcha or login failed."),
-            "retryable": False,
-            "debug_dir": debug_dir
-        }), 401
+        return jsonify(
+            {
+                "success": False,
+                "message": result.get("message", "Captcha or login failed."),
+                "retryable": False,
+                "debug_dir": debug_dir,
+            }
+        ), 401
 
 
-@app.route('/api/captcha/refresh', methods=['POST'])
+@app.route("/api/captcha/refresh", methods=["POST"])
 def refresh_captcha():
     data = request.json or {}
-    session_id = data.get('session_id')
+    session_id = data.get("session_id")
 
     if not session_id:
         return jsonify({"success": False, "message": "session_id required"}), 400
 
     if session_id not in user_sessions:
-        return jsonify({"success": False, "message": "Session expired or invalid."}), 401
+        return jsonify(
+            {"success": False, "message": "Session expired or invalid."}
+        ), 401
 
     scraper = user_sessions[session_id]["scraper"]
     if not scraper.has_session(session_id):
@@ -283,17 +359,48 @@ def refresh_captcha():
             del user_sessions[session_id]
         except:
             pass
-        return jsonify({"success": False, "message": "Session expired. Please login again."}), 401
+        return jsonify(
+            {"success": False, "message": "Session expired. Please login again."}
+        ), 401
 
     result = scraper.refresh_captcha(session_id)
     if result.get("success"):
-        return jsonify({"success": True, "captcha_base64": result.get("captcha_base64")}), 200
+        return jsonify(
+            {"success": True, "captcha_base64": result.get("captcha_base64")}
+        ), 200
 
-    return jsonify({
-        "success": False,
-        "message": result.get("message", "Failed to refresh captcha."),
-        "debug_dir": scraper.get_session_debug_dir(session_id)
-    }), 500
+    return jsonify(
+        {
+            "success": False,
+            "message": result.get("message", "Failed to refresh captcha."),
+            "debug_dir": scraper.get_session_debug_dir(session_id),
+        }
+    ), 500
+
+
+@app.route("/api/cookies/status", methods=["POST"])
+def cookie_status():
+    data = request.json or {}
+    rollno = data.get("rollno") or _default_rollno()
+    if not rollno:
+        return jsonify({"success": False, "message": "Roll number required"}), 400
+    return jsonify(
+        {
+            "success": True,
+            "has_valid_session": cookie_store.has_valid_session(rollno),
+            "age_hours": cookie_store.cookie_age_hours(rollno),
+            "max_age_hours": cookie_store.MAX_SESSION_AGE_HOURS,
+        }
+    )
+
+
+@app.route("/api/cookies/clear", methods=["POST"])
+def cookie_clear():
+    data = request.json or {}
+    rollno = data.get("rollno") or _default_rollno()
+    if rollno:
+        cookie_store.delete_cookies(rollno)
+    return jsonify({"success": True, "message": "Cookies cleared"})
 
 
 def _analysis_subjects(analysis):
@@ -303,12 +410,15 @@ def _analysis_subjects(analysis):
         return analysis.get("attendance") or []
     return []
 
+
 def _analysis_dict(analysis):
     return analysis if isinstance(analysis, dict) else {}
+
 
 def _session_source_kind(session_data):
     scraper = session_data.get("scraper")
     return "cache" if getattr(scraper, "use_mock", False) else "live_scrape"
+
 
 def _session_analysis(session_id):
     session_data = user_sessions.get(session_id)
@@ -322,6 +432,7 @@ def _session_analysis(session_id):
     except:
         return session_data, None
 
+
 def _session_has_browser(session_id, session_data):
     scraper = session_data.get("scraper")
     if not scraper:
@@ -331,10 +442,13 @@ def _session_has_browser(session_id, session_data):
     except:
         return False
 
+
 def _subject_coral_row(session_id, session_data, subject):
     rollno = session_data.get("rollno", "")
     source_kind = _session_source_kind(session_data)
-    absent = subject.get("absent", max(subject.get("total", 0) - subject.get("attended", 0), 0))
+    absent = subject.get(
+        "absent", max(subject.get("total", 0) - subject.get("attended", 0), 0)
+    )
     return {
         "session_id": session_id,
         "rollno": rollno,
@@ -362,8 +476,12 @@ def _subject_coral_row(session_id, session_data, subject):
         "special_event_count": len(subject.get("special_events") or []),
     }
 
+
 def _session_not_found_response(collection_name):
-    return jsonify({"success": False, "message": "Unknown session_id", collection_name: []}), 404
+    return jsonify(
+        {"success": False, "message": "Unknown session_id", collection_name: []}
+    ), 404
+
 
 def _session_base_row(session_id, session_data):
     return {
@@ -371,6 +489,7 @@ def _session_base_row(session_id, session_data):
         "rollno": session_data.get("rollno", ""),
         "source_kind": _session_source_kind(session_data),
     }
+
 
 def _event_special_codes(event):
     codes = []
@@ -390,18 +509,22 @@ def _event_special_codes(event):
                 codes.append(token)
     return codes
 
-@app.route('/api/coral/health', methods=['GET'])
-def coral_health():
-    return jsonify({
-        "success": True,
-        "service": "kairon",
-        "assistant_version": APP_VERSION,
-        "session_count": len(user_sessions),
-        "default_rollno": _default_rollno(),
-        "has_saved_password": bool(_default_password()),
-    })
 
-@app.route('/api/coral/sessions', methods=['GET'])
+@app.route("/api/coral/health", methods=["GET"])
+def coral_health():
+    return jsonify(
+        {
+            "success": True,
+            "service": "kairon",
+            "assistant_version": APP_VERSION,
+            "session_count": len(user_sessions),
+            "default_rollno": _default_rollno(),
+            "has_saved_password": bool(_default_password()),
+        }
+    )
+
+
+@app.route("/api/coral/sessions", methods=["GET"])
 def coral_sessions():
     rows = []
     for session_id, session_data in user_sessions.items():
@@ -412,23 +535,28 @@ def coral_sessions():
             debug_dir = scraper.get_session_debug_dir(session_id) if scraper else ""
         except:
             debug_dir = ""
-        rows.append({
-            "session_id": session_id,
-            "rollno": session_data.get("rollno", ""),
-            "source_kind": _session_source_kind(session_data),
-            "has_analysis": bool(subjects),
-            "subject_count": len(subjects),
-            "has_browser_session": _session_has_browser(session_id, session_data),
-            "debug_dir": debug_dir or "",
-        })
+        rows.append(
+            {
+                "session_id": session_id,
+                "rollno": session_data.get("rollno", ""),
+                "source_kind": _session_source_kind(session_data),
+                "has_analysis": bool(subjects),
+                "subject_count": len(subjects),
+                "has_browser_session": _session_has_browser(session_id, session_data),
+                "debug_dir": debug_dir or "",
+            }
+        )
     return jsonify({"success": True, "sessions": rows})
 
-@app.route('/api/coral/attendance_subjects', methods=['GET'])
+
+@app.route("/api/coral/attendance_subjects", methods=["GET"])
 def coral_attendance_subjects():
     session_id = request.args.get("session_id", "").strip()
     session_data, analysis_data = _session_analysis(session_id)
     if not session_data:
-        return jsonify({"success": False, "message": "Unknown session_id", "subjects": []}), 404
+        return jsonify(
+            {"success": False, "message": "Unknown session_id", "subjects": []}
+        ), 404
 
     subjects = [
         _subject_coral_row(session_id, session_data, subject)
@@ -436,39 +564,45 @@ def coral_attendance_subjects():
     ]
     return jsonify({"success": True, "subjects": subjects})
 
-@app.route('/api/coral/attendance_days', methods=['GET'])
+
+@app.route("/api/coral/attendance_days", methods=["GET"])
 def coral_attendance_days():
     session_id = request.args.get("session_id", "").strip()
     session_data, analysis_data = _session_analysis(session_id)
     if not session_data:
-        return jsonify({"success": False, "message": "Unknown session_id", "days": []}), 404
+        return jsonify(
+            {"success": False, "message": "Unknown session_id", "days": []}
+        ), 404
 
     rows = []
     rollno = session_data.get("rollno", "")
     source_kind = _session_source_kind(session_data)
     for subject in _analysis_subjects(analysis_data):
         for event in subject.get("day_wise") or []:
-            rows.append({
-                "session_id": session_id,
-                "rollno": rollno,
-                "source_kind": source_kind,
-                "academic_year": subject.get("academic_year", ""),
-                "semester": subject.get("semester", ""),
-                "subject": subject.get("subject", ""),
-                "code": subject.get("code", ""),
-                "date": event.get("date", ""),
-                "label": event.get("label", ""),
-                "status": event.get("status", ""),
-                "present_count": event.get("present_count", 0),
-                "absent_count": event.get("absent_count", 0),
-                "special_count": event.get("special_count", 0),
-                "special_codes": ",".join(_event_special_codes(event)),
-                "class_count": event.get("class_count", 0),
-                "raw": event.get("raw", ""),
-            })
+            rows.append(
+                {
+                    "session_id": session_id,
+                    "rollno": rollno,
+                    "source_kind": source_kind,
+                    "academic_year": subject.get("academic_year", ""),
+                    "semester": subject.get("semester", ""),
+                    "subject": subject.get("subject", ""),
+                    "code": subject.get("code", ""),
+                    "date": event.get("date", ""),
+                    "label": event.get("label", ""),
+                    "status": event.get("status", ""),
+                    "present_count": event.get("present_count", 0),
+                    "absent_count": event.get("absent_count", 0),
+                    "special_count": event.get("special_count", 0),
+                    "special_codes": ",".join(_event_special_codes(event)),
+                    "class_count": event.get("class_count", 0),
+                    "raw": event.get("raw", ""),
+                }
+            )
     return jsonify({"success": True, "days": rows})
 
-@app.route('/api/coral/session_summary', methods=['GET'])
+
+@app.route("/api/coral/session_summary", methods=["GET"])
 def coral_session_summary():
     session_id = request.args.get("session_id", "").strip()
     session_data, analysis_data = _session_analysis(session_id)
@@ -490,16 +624,32 @@ def coral_session_summary():
         "synced_filter_count": len(source.get("synced_filters") or []),
         "surface_count": len(source.get("data_surfaces") or []),
         "subject_count": insights.get("subject_count", len(subjects)),
-        "total_attended": insights.get("total_attended", sum(item.get("attended", 0) for item in subjects)),
-        "total_absent": insights.get("total_absent", sum(item.get("absent", max(item.get("total", 0) - item.get("attended", 0), 0)) for item in subjects)),
-        "total_classes": insights.get("total_classes", sum(item.get("total", 0) for item in subjects)),
+        "total_attended": insights.get(
+            "total_attended", sum(item.get("attended", 0) for item in subjects)
+        ),
+        "total_absent": insights.get(
+            "total_absent",
+            sum(
+                item.get(
+                    "absent", max(item.get("total", 0) - item.get("attended", 0), 0)
+                )
+                for item in subjects
+            ),
+        ),
+        "total_classes": insights.get(
+            "total_classes", sum(item.get("total", 0) for item in subjects)
+        ),
         "overall_percentage": insights.get("overall_percentage", 0),
-        "risky_subject_count": insights.get("risky_subject_count", len([item for item in subjects if item.get("status_75") != "safe"])),
+        "risky_subject_count": insights.get(
+            "risky_subject_count",
+            len([item for item in subjects if item.get("status_75") != "safe"]),
+        ),
         "total_skippable_75": insights.get("total_skippable_75", 0),
     }
     return jsonify({"success": True, "summaries": [row]})
 
-@app.route('/api/coral/student_profile', methods=['GET'])
+
+@app.route("/api/coral/student_profile", methods=["GET"])
 def coral_student_profile():
     session_id = request.args.get("session_id", "").strip()
     session_data, analysis_data = _session_analysis(session_id)
@@ -516,13 +666,17 @@ def coral_student_profile():
         "degree": student.get("degree", ""),
         "department": student.get("department", ""),
         "semester": source.get("semester") or student.get("semester", ""),
-        "academic_year": source.get("academic_year") or student.get("academic_year", ""),
+        "academic_year": source.get("academic_year")
+        or student.get("academic_year", ""),
         "photo_available": bool(student.get("photo_available")),
-        "photo_cached": bool(student.get("photo_base64") or student.get("photo_data_url")),
+        "photo_cached": bool(
+            student.get("photo_base64") or student.get("photo_data_url")
+        ),
     }
     return jsonify({"success": True, "profiles": [row]})
 
-@app.route('/api/coral/synced_filters', methods=['GET'])
+
+@app.route("/api/coral/synced_filters", methods=["GET"])
 def coral_synced_filters():
     session_id = request.args.get("session_id", "").strip()
     session_data, analysis_data = _session_analysis(session_id)
@@ -533,16 +687,19 @@ def coral_synced_filters():
     source = analysis.get("source") or {}
     rows = []
     for index, item in enumerate(source.get("synced_filters") or [], start=1):
-        rows.append({
-            **_session_base_row(session_id, session_data),
-            "position": index,
-            "academic_year": item.get("year", ""),
-            "semester": item.get("semester", ""),
-            "filter_attempt": item.get("filter_attempt", 0),
-        })
+        rows.append(
+            {
+                **_session_base_row(session_id, session_data),
+                "position": index,
+                "academic_year": item.get("year", ""),
+                "semester": item.get("semester", ""),
+                "filter_attempt": item.get("filter_attempt", 0),
+            }
+        )
     return jsonify({"success": True, "filters": rows})
 
-@app.route('/api/coral/portal_surfaces', methods=['GET'])
+
+@app.route("/api/coral/portal_surfaces", methods=["GET"])
 def coral_portal_surfaces():
     session_id = request.args.get("session_id", "").strip()
     session_data, analysis_data = _session_analysis(session_id)
@@ -554,12 +711,17 @@ def coral_portal_surfaces():
     portal = analysis.get("portal") or {}
     surfaces = source.get("data_surfaces") or portal.get("data_surfaces") or []
     rows = [
-        {**_session_base_row(session_id, session_data), "position": index, "surface": surface}
+        {
+            **_session_base_row(session_id, session_data),
+            "position": index,
+            "surface": surface,
+        }
         for index, surface in enumerate(surfaces, start=1)
     ]
     return jsonify({"success": True, "surfaces": rows})
 
-@app.route('/api/coral/portal_links', methods=['GET'])
+
+@app.route("/api/coral/portal_links", methods=["GET"])
 def coral_portal_links():
     session_id = request.args.get("session_id", "").strip()
     session_data, analysis_data = _session_analysis(session_id)
@@ -570,16 +732,19 @@ def coral_portal_links():
     portal = analysis.get("portal") or {}
     rows = []
     for index, item in enumerate(portal.get("links") or [], start=1):
-        rows.append({
-            **_session_base_row(session_id, session_data),
-            "position": index,
-            "section": item.get("section", ""),
-            "text": item.get("text", ""),
-            "target": item.get("target", ""),
-        })
+        rows.append(
+            {
+                **_session_base_row(session_id, session_data),
+                "position": index,
+                "section": item.get("section", ""),
+                "text": item.get("text", ""),
+                "target": item.get("target", ""),
+            }
+        )
     return jsonify({"success": True, "links": rows})
 
-@app.route('/api/coral/status_legend', methods=['GET'])
+
+@app.route("/api/coral/status_legend", methods=["GET"])
 def coral_status_legend():
     session_id = request.args.get("session_id", "").strip()
     session_data, analysis_data = _session_analysis(session_id)
@@ -590,12 +755,17 @@ def coral_status_legend():
     source = analysis.get("source") or {}
     legend = source.get("status_legend") or {}
     rows = [
-        {**_session_base_row(session_id, session_data), "code": code, "description": description}
+        {
+            **_session_base_row(session_id, session_data),
+            "code": code,
+            "description": description,
+        }
         for code, description in sorted(legend.items())
     ]
     return jsonify({"success": True, "legend": rows})
 
-@app.route('/api/coral/attendance_marks', methods=['GET'])
+
+@app.route("/api/coral/attendance_marks", methods=["GET"])
 def coral_attendance_marks():
     session_id = request.args.get("session_id", "").strip()
     session_data, analysis_data = _session_analysis(session_id)
@@ -609,18 +779,20 @@ def coral_attendance_marks():
     for subject in _analysis_subjects(analysis_data):
         for event in subject.get("day_wise") or []:
             for code in _event_special_codes(event):
-                rows.append({
-                    **_session_base_row(session_id, session_data),
-                    "academic_year": subject.get("academic_year", ""),
-                    "semester": subject.get("semester", ""),
-                    "subject": subject.get("subject", ""),
-                    "subject_code": subject.get("code", ""),
-                    "date": event.get("date", ""),
-                    "label": event.get("label", ""),
-                    "mark": code,
-                    "description": legend.get(code, ""),
-                    "raw": event.get("raw", ""),
-                })
+                rows.append(
+                    {
+                        **_session_base_row(session_id, session_data),
+                        "academic_year": subject.get("academic_year", ""),
+                        "semester": subject.get("semester", ""),
+                        "subject": subject.get("subject", ""),
+                        "subject_code": subject.get("code", ""),
+                        "date": event.get("date", ""),
+                        "label": event.get("label", ""),
+                        "mark": code,
+                        "description": legend.get(code, ""),
+                        "raw": event.get("raw", ""),
+                    }
+                )
     return jsonify({"success": True, "marks": rows})
 
 
@@ -642,33 +814,37 @@ def _find_available_port(preferred_port):
     finally:
         fallback.close()
 
-@app.route('/api/chat', methods=['POST'])
+
+@app.route("/api/chat", methods=["POST"])
 def chat():
     data = request.json or {}
-    session_id = data.get('session_id')
-    user_message = data.get('message', '')
-    
+    session_id = data.get("session_id")
+    user_message = data.get("message", "")
+
     if session_id not in user_sessions:
         return jsonify({"reply": "Please login first. Session expired."}), 401
-        
+
     chatbot = user_sessions[session_id]["chatbot"]
     reply = chatbot.process_message(user_message)
     return jsonify({"reply": reply, "assistant_version": APP_VERSION})
 
 
-@app.route('/api/analysis', methods=['POST'])
+@app.route("/api/analysis", methods=["POST"])
 def analysis():
     data = request.json or {}
-    session_id = data.get('session_id')
+    session_id = data.get("session_id")
     if not session_id or session_id not in user_sessions:
-        return jsonify({"success": False, "message": "Invalid or missing session_id"}), 401
+        return jsonify(
+            {"success": False, "message": "Invalid or missing session_id"}
+        ), 401
 
     scraper = user_sessions[session_id]["scraper"]
     return jsonify({"success": True, "analysis": scraper.get_full_analysis()})
 
-if __name__ == '__main__':
-    host = os.getenv('HOST', '0.0.0.0')
-    preferred_port = int(os.getenv('PORT', '5000'))
+
+if __name__ == "__main__":
+    host = os.getenv("HOST", "0.0.0.0")
+    preferred_port = int(os.getenv("PORT", "5000"))
     port = _find_available_port(preferred_port)
     print(f"[STARTUP] Preferred port {preferred_port}; using port {port}")
     app.run(host=host, debug=True, port=port, threaded=False, use_reloader=False)

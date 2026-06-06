@@ -11,8 +11,13 @@ import urllib.error
 from urllib.parse import urljoin
 from datetime import datetime
 from bs4 import BeautifulSoup
+from collections import Counter
 
 from playwright_manager import get_browser, get_browser_error, stop_browser
+import cookie_store
+import captcha_solver
+import stealth
+import email_notifier
 
 # Global dictionary to store active sessions waiting for captcha
 active_sessions = {}
@@ -94,17 +99,24 @@ class AttendanceScraper:
         try:
             state = frame.evaluate("""
                 () => {
-                    const valueLen = (id) => {
+                    const val = (id) => {
                         const el = document.getElementById(id);
-                        return el && typeof el.value === 'string' ? el.value.length : null;
+                        return el && typeof el.value === 'string' ? el.value : null;
                     };
                     const captcha = document.querySelector('img#captchaimg, img[id*="captcha"], img[src*="captcha"]');
+                    const uid = val('uid');
+                    const pwd = val('pwd');
                     return {
                         url: window.location.href,
-                        uid_len: valueLen('uid'),
-                        pwd_len: valueLen('pwd'),
-                        cap_len: valueLen('cap'),
+                        uid: uid,
+                        uid_len: uid ? uid.length : 0,
+                        pwd_first_char: pwd && pwd.length > 0 ? pwd[0] : null,
+                        pwd_len: pwd ? pwd.length : 0,
+                        cap: val('cap'),
+                        fy: val('fy'),
+                        comp: val('comp'),
                         hrand: document.getElementById('HRAND_NUM')?.value || null,
+                        logintype: val('logintype'),
                         captcha_src: captcha?.getAttribute('src') || null
                     };
                 }
@@ -181,9 +193,218 @@ class AttendanceScraper:
             except:
                 pass
 
+    def _scrape_authenticated_flow(
+        self, page, debug_dir, attempt_no, rollno, portal_catalog
+    ):
+        attendance_payload = getattr(self, "_last_attendance_payload", {}) or {}
+        self._ensure_activity_menu_loaded(page, debug_dir, attempt_no)
+        portal_catalog = portal_catalog or self._extract_portal_catalog(page)
+        self._last_portal_catalog = portal_catalog
+        self._write_debug_json(
+            debug_dir, f"06_portal_catalog_attempt_{attempt_no}.json", portal_catalog
+        )
+
+        attendance_link = self._find_attendance_link(page)
+        if not attendance_link:
+            self._snapshot_frames(
+                page, debug_dir, f"06_attendance_link_not_found_attempt_{attempt_no}"
+            )
+            return None
+
+        my_attendance_href = attendance_link["href"]
+        self._write_debug_text(
+            debug_dir,
+            f"06_attendance_href_attempt_{attempt_no}.txt",
+            my_attendance_href,
+        )
+        self._write_debug_json(
+            debug_dir, f"06_attendance_link_attempt_{attempt_no}.json", attendance_link
+        )
+
+        try:
+            self._open_attendance_link(page, attendance_link)
+        except Exception as e:
+            raise Exception(f"Could not navigate to attendance page: {str(e)[:80]}")
+
+        self._snapshot_page(
+            page, debug_dir, f"07_after_attendance_nav_attempt_{attempt_no}"
+        )
+        self._snapshot_frames(
+            page, debug_dir, f"07_after_attendance_nav_attempt_{attempt_no}"
+        )
+
+        invalid_detail = self._invalid_operation_detail(page)
+        if invalid_detail:
+            self._write_debug_json(
+                debug_dir,
+                f"07_invalid_operation_attempt_{attempt_no}.json",
+                invalid_detail,
+            )
+            self._ensure_activity_menu_loaded(page, debug_dir, attempt_no, force=True)
+            fresh_attendance_link = self._find_attendance_link(page, max_attempts=5)
+            self._write_debug_json(
+                debug_dir,
+                f"07_attendance_link_retry_attempt_{attempt_no}.json",
+                fresh_attendance_link or {"found": False},
+            )
+            if fresh_attendance_link:
+                self._open_attendance_link(page, fresh_attendance_link)
+                self._snapshot_page(
+                    page, debug_dir, f"07_after_attendance_retry_attempt_{attempt_no}"
+                )
+                self._snapshot_frames(
+                    page, debug_dir, f"07_after_attendance_retry_attempt_{attempt_no}"
+                )
+                invalid_detail = self._invalid_operation_detail(page)
+            if invalid_detail:
+                self._write_debug_json(
+                    debug_dir,
+                    f"07_invalid_operation_after_retry_attempt_{attempt_no}.json",
+                    invalid_detail,
+                )
+                raise Exception(
+                    "Portal rejected the My Attendance link with Invalid operation232."
+                )
+
+        content_frame = self._find_attendance_form_frame(page, max_attempts=30)
+        if not content_frame:
+            self._snapshot_page(
+                page, debug_dir, f"08_missing_form_attempt_{attempt_no}"
+            )
+            raise Exception(
+                "Could not find attendance form after opening My Attendance"
+            )
+
+        content_frame, html_content, attendance_data = self._load_attendance_records(
+            page, content_frame, debug_dir, attempt_no, rollno
+        )
+        if not attendance_data:
+            self._snapshot_page(page, debug_dir, f"10_no_records_attempt_{attempt_no}")
+            raise Exception("No attendance records found")
+
+        self._write_debug_json(
+            debug_dir, f"11_attendance_data_attempt_{attempt_no}.json", attendance_data
+        )
+
+        for subject in attendance_data:
+            href = subject.get("details_link")
+            if href and "newPopup" in href:
+                try:
+                    js_code = href.replace("JavaScript:", "").replace("javascript:", "")
+                    with page.expect_popup() as popup_info:
+                        content_frame.locator("body").evaluate(f"() => {{ {js_code} }}")
+                    popup = popup_info.value
+                    popup.wait_for_load_state()
+                    popup_html = popup.content()
+                    self._write_debug_text(
+                        debug_dir,
+                        f"popup_{subject.get('subject', 'unknown')}_{attempt_no}.html",
+                        popup_html,
+                    )
+                    subject["day_wise"] = self._parse_day_wise_html(popup_html)
+                    popup.close()
+                except:
+                    subject.setdefault("day_wise", [])
+            else:
+                subject.setdefault("day_wise", [])
+
+        cached_analysis = self._compute_full_analysis(
+            attendance_data,
+            attendance_payload=attendance_payload,
+            portal_catalog=portal_catalog,
+        )
+        self._write_debug_json(
+            debug_dir, f"12_final_analysis_attempt_{attempt_no}.json", cached_analysis
+        )
+        return cached_analysis
+
     def get_session_debug_dir(self, session_id):
         if session_id in active_sessions:
             return active_sessions[session_id].get("debug_dir")
+        return None
+
+    def _save_session_cookies(self, page, rollno, metadata=None):
+        try:
+            context = page.context
+            cookies = context.cookies()
+            if cookies:
+                cookie_store.save_cookies(
+                    rollno,
+                    cookies,
+                    metadata={
+                        "user_agent": page.evaluate("navigator.userAgent")
+                        if metadata is None
+                        else metadata
+                    },
+                )
+                print(f"[COOKIE] Saved {len(cookies)} cookies for {rollno}")
+                return True
+        except Exception as e:
+            print(f"[COOKIE] Save error: {e}")
+        return False
+
+    def _try_cookie_login(self, rollno, password):
+        if not cookie_store.ENFORCE_COOKIE_REUSE:
+            return None
+        cookies = cookie_store.load_cookies(rollno)
+        if not cookies:
+            return None
+
+        print(f"[COOKIE] Attempting session reuse for {rollno}")
+        try:
+            b = get_browser()
+            if not b:
+                return None
+
+            context_options = stealth.context_options()
+            context = (
+                b.new_context(**context_options) if context_options else b.new_context()
+            )
+            page = context.new_page()
+            page.set_default_timeout(30000)
+
+            context.add_cookies(cookies)
+            page.goto(
+                "https://www.imsnsit.org/imsnsit/",
+                wait_until="domcontentloaded",
+                timeout=30000,
+            )
+            time.sleep(2)
+
+            for frame in page.frames:
+                try:
+                    if frame.locator("text='Student Login'").count() > 0:
+                        frame.locator("text='Student Login'").click()
+                        time.sleep(2)
+                        break
+                except:
+                    pass
+
+            if self._has_authenticated_signal(page):
+                print(f"[COOKIE] Session reuse successful for {rollno}")
+                session_id = str(uuid.uuid4())
+                debug_dir = self._session_debug_dir(session_id)
+                active_sessions[session_id] = {
+                    "context": context,
+                    "page": page,
+                    "login_frame": None,
+                    "rollno": rollno,
+                    "password": password,
+                    "timestamp": time.time(),
+                    "debug_dir": debug_dir,
+                    "attempts": 0,
+                    "cookie_reused": True,
+                }
+                return session_id
+
+            print(f"[COOKIE] Session expired for {rollno}, falling back to login")
+            context.close()
+        except Exception as e:
+            print(f"[COOKIE] Reuse error: {e}")
+            try:
+                context.close()
+            except:
+                pass
         return None
 
     def _get_fresh_captcha_base64(self, frame):
@@ -323,13 +544,25 @@ class AttendanceScraper:
     def start_login(self, rollno, password):
         """Starts browser, fills credentials, returns captcha base64.
 
-        Retries browser launch once on transient failures.
+        Tries cookie-based session reuse first. Falls back to fresh login
+        with CAPTCHA. Retries browser launch once on transient failures.
         """
         if self.use_mock:
             return {
                 "success": True,
                 "session_id": "mock_session",
                 "captcha_base64": "mock_base64",
+            }
+
+        reused_session_id = self._try_cookie_login(rollno, password)
+        if reused_session_id:
+            self._cleanup_old_sessions()
+            return {
+                "success": True,
+                "session_id": reused_session_id,
+                "captcha_base64": None,
+                "cookie_reused": True,
+                "message": "Reused existing portal session",
             }
 
         context = None
@@ -345,9 +578,14 @@ class AttendanceScraper:
                     )
                     raise Exception(f"{hint} Detail: {detail}" if detail else hint)
 
-                context = b.new_context(
-                    viewport={"width": 1280, "height": 720},
-                    user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                context_options = stealth.context_options()
+                context = (
+                    b.new_context(**context_options)
+                    if context_options
+                    else b.new_context(
+                        viewport={"width": 1280, "height": 720},
+                        user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    )
                 )
                 page = context.new_page()
                 page.set_default_timeout(30000)
@@ -358,22 +596,19 @@ class AttendanceScraper:
                     timeout=30000,
                 )
 
-                # Wait a moment for frames to load
-                time.sleep(2)
+                stealth.random_delay(1.5, 0.5)
 
-                # Click Student Login link to load the login form in the banner frame
                 for frame in page.frames:
                     try:
                         if frame.locator("text='Student Login'").count() > 0:
                             frame.locator("text='Student Login'").click()
-                            time.sleep(2)
+                            stealth.random_delay(1.5, 0.5)
                             break
                     except:
                         pass
 
-                # Search across all frames for the login form
                 login_frame = None
-                for _ in range(60):  # Check up to 1 minute
+                for _ in range(60):
                     login_frame = self._find_login_frame(page)
                     if login_frame:
                         break
@@ -384,7 +619,7 @@ class AttendanceScraper:
                         "Could not find the login form. The portal might be down or loading slowly."
                     )
 
-                break  # Success, exit retry loop
+                break
 
             except Exception as e:
                 if context:
@@ -399,19 +634,19 @@ class AttendanceScraper:
                 return {"success": False, "message": str(e)}
 
         try:
-            # Force fill skips strict visibility/clickability checks that cause timeouts
-            login_frame.locator("input[name='uid']").fill(
-                rollno, force=True, timeout=5000
+            stealth.random_delay(0.3, 0.2)
+            login_frame.evaluate(
+                f"document.getElementById('uid').value = {json.dumps(rollno)}"
             )
-            login_frame.locator("input[name='pwd']").fill(
-                password, force=True, timeout=5000
+            stealth.random_delay(0.2, 0.15)
+            login_frame.evaluate(
+                f"document.getElementById('pwd').value = {json.dumps(password)}"
             )
         except Exception as e:
             raise Exception(
                 f"Found the login frame but couldn't fill credentials. Error: {str(e)}"
             )
 
-        # Capture captcha image
         captcha_element = login_frame.locator("img#captchaimg")
         if captcha_element.count() == 0:
             raise Exception("Could not locate captcha image on the login form.")
@@ -441,6 +676,7 @@ class AttendanceScraper:
             "debug_dir": debug_dir,
             "attempts": 0,
             "captcha_bytes": captcha_bytes,
+            "cookie_reused": False,
         }
 
         self._cleanup_old_sessions()
@@ -451,7 +687,14 @@ class AttendanceScraper:
             "captcha_base64": f"data:image/png;base64,{captcha_base64}",
         }
 
-    def submit_captcha_and_scrape(self, session_id, captcha_text=None, auto_ocr=False):
+    def submit_captcha_and_scrape(
+        self,
+        session_id,
+        captcha_text=None,
+        auto_ocr=False,
+        override_rollno=None,
+        override_password=None,
+    ):
         """
         Submits captcha, navigates to attendance, scrapes table.
 
@@ -459,6 +702,8 @@ class AttendanceScraper:
             session_id: Session ID from start_login
             captcha_text: User-provided CAPTCHA solution (optional if auto_ocr=True)
             auto_ocr: If True, attempt automatic CAPTCHA solving via OCR
+            override_rollno: Fresh rollno from frontend to override session-stored value
+            override_password: Fresh password from frontend to override session-stored value
         """
         if self.use_mock:
             return {"success": True, "message": "Logged in with mock data"}
@@ -474,8 +719,17 @@ class AttendanceScraper:
         session_data = active_sessions[session_id]
         page = session_data["page"]
         context = session_data["context"]
+
+        if override_rollno is not None:
+            session_data["rollno"] = override_rollno
+        if override_password is not None:
+            session_data["password"] = override_password
+
         rollno = session_data.get("rollno", "")
         password = session_data.get("password", "")
+        print(
+            f"[LOGIN] Submitting captcha for {rollno}, password_len={len(password)}, cookie_reused={session_data.get('cookie_reused', False)}"
+        )
         debug_dir = session_data.get("debug_dir") or self._session_debug_dir(session_id)
         session_data["debug_dir"] = debug_dir
         session_data["timestamp"] = time.time()
@@ -491,6 +745,34 @@ class AttendanceScraper:
             },
         )
 
+        # STEP 0: If cookie-reused and already authenticated, skip login
+        if session_data.get("cookie_reused") and self._has_authenticated_signal(page):
+            print(f"[COOKIE] Already authenticated, skipping CAPTCHA submission")
+            self._snapshot_page(page, debug_dir, f"03_cookie_reuse_skip_login")
+            portal_catalog = self._extract_portal_catalog(page)
+            self._last_portal_catalog = portal_catalog
+            self._write_debug_json(
+                debug_dir, f"06_portal_catalog_cookie.json", portal_catalog
+            )
+            try:
+                cached_analysis = self._scrape_authenticated_flow(
+                    page, debug_dir, attempt_no, rollno, portal_catalog
+                )
+                if cached_analysis:
+                    self.cached_analysis = cached_analysis
+                    self.close_session(session_id)
+                    return {
+                        "success": True,
+                        "message": "Reused session. Attendance synced!",
+                    }
+            except Exception as e:
+                return {
+                    "success": False,
+                    "message": str(e),
+                    "retryable": True,
+                    "captcha_base64": None,
+                }
+
         try:
             # STEP 1: Find CAPTCHA input and fill it
             login_frame = self._find_login_frame(page)
@@ -501,12 +783,14 @@ class AttendanceScraper:
                 )
 
             # Try OCR if auto_ocr=True and captcha_text is empty
+            session_data["_ocr_attempts"] = []
             if auto_ocr and not captcha_text:
                 # Use the original captcha bytes from login to avoid stale/refreshed images
                 captcha_bytes_for_ocr = session_data.get("captcha_bytes")
+                ocr_results = []
                 for ocr_attempt in range(3):
                     try:
-                        # Refresh captcha on retry attempts
+                        # Refresh captcha on retry attempts (get a fresh captcha each time)
                         if ocr_attempt > 0:
                             new_captcha_b64 = self._refresh_captcha_and_get_base64(
                                 page,
@@ -518,7 +802,6 @@ class AttendanceScraper:
                             login_frame = self._find_login_frame(page)
                             if not login_frame:
                                 break
-                            # Re-screenshot the fresh captcha for next OCR attempt
                             try:
                                 captcha_el = login_frame.locator(
                                     "img#captchaimg, img[id*='captcha'], img[src*='captcha']"
@@ -528,19 +811,19 @@ class AttendanceScraper:
                             except:
                                 pass
 
-                        captcha_text = self._ocr_captcha_from_bytes(
+                        attempt_result = self._ocr_captcha_from_bytes(
                             captcha_bytes_for_ocr
                         )
-                        if captcha_text:
+                        if attempt_result:
                             print(
-                                f"[OCR] Detected CAPTCHA via OCR (attempt {ocr_attempt + 1}): '{captcha_text}'"
+                                f"[OCR] Attempt {ocr_attempt + 1}: '{attempt_result}'"
                             )
                             self._write_debug_text(
                                 debug_dir,
                                 f"attempt_{attempt_no}_ocr_text_{ocr_attempt}.txt",
-                                captcha_text,
+                                attempt_result,
                             )
-                            break
+                            ocr_results.append(attempt_result)
                         else:
                             self._write_debug_text(
                                 debug_dir,
@@ -554,6 +837,17 @@ class AttendanceScraper:
                             str(e),
                         )
 
+                # Store OCR attempts for email notification
+                session_data["_ocr_attempts"] = ocr_results
+                # Pick best from collected results: prefer 5-digit, then most common
+                if ocr_results:
+                    five_digit = [r for r in ocr_results if len(r) == 5]
+                    if five_digit:
+                        freq = Counter(five_digit)
+                        captcha_text = freq.most_common(1)[0][0]
+                    else:
+                        captcha_text = ocr_results[0]
+
                 if not captcha_text:
                     self._snapshot_page(
                         page, debug_dir, f"03_ocr_failed_attempt_{attempt_no}"
@@ -565,6 +859,7 @@ class AttendanceScraper:
                         "captcha_base64": self._get_fresh_captcha_base64(login_frame)
                         if login_frame
                         else None,
+                        "ocr_attempts": ocr_results,
                     }
 
             if not captcha_text:
@@ -575,67 +870,79 @@ class AttendanceScraper:
                     "captcha_base64": self._get_fresh_captcha_base64(login_frame),
                 }
 
-            # Re-fill all fields right before submit to avoid portal-side value resets.
+            # Re-fill all fields right before submit using JS evaluate()
+            # to bypass any JS event handlers that might interfere with form state.
             if rollno:
-                login_frame.locator("input[name='uid']").click(click_count=3)
-                login_frame.locator("input[name='uid']").fill(str(rollno), force=True)
+                login_frame.evaluate(
+                    f"document.getElementById('uid').value = {json.dumps(rollno)}"
+                )
             if password:
-                login_frame.locator("input[name='pwd']").click(click_count=3)
-                login_frame.locator("input[name='pwd']").fill(str(password), force=True)
+                login_frame.evaluate(
+                    f"document.getElementById('pwd').value = {json.dumps(password)}"
+                )
 
-            login_frame.locator("input[name='cap']").click(click_count=3)
-            login_frame.locator("input[name='cap']").fill(str(captcha_text), force=True)
+            stealth.random_delay(0.1, 0.05)
+            login_frame.evaluate(
+                f"document.getElementById('cap').value = {json.dumps(str(captcha_text))}"
+            )
             self._write_login_form_state(
                 debug_dir,
                 f"03_before_submit_form_state_attempt_{attempt_no}.json",
                 login_frame,
             )
 
-            # Submit using portal's own validation function first.
+            # Submit using direct button click (most reliable with portal frames)
+            submitted = False
             try:
-                submitted = login_frame.evaluate("""
-                    () => {
-                        if (typeof Login === 'function') {
-                            return Login() !== false;
-                        }
-                        const form = document.forms['f1'];
-                        if (form) {
-                            form.submit();
-                            return true;
-                        }
-                        const loginButton = document.getElementById('login');
-                        if (loginButton) {
-                            loginButton.click();
-                            return true;
-                        }
-                        return false;
-                    }
-                """)
-                if not submitted:
-                    self._write_login_form_state(
-                        debug_dir,
-                        f"03_submit_rejected_form_state_attempt_{attempt_no}.json",
-                        login_frame,
-                    )
-                    raise Exception("Portal rejected the login form before submit.")
-            except Exception as e:
-                # A fast frame navigation can destroy the JS context right after
-                # form.submit(); in that case the submit already happened.
-                nav_started = any(
-                    marker in str(e).lower()
-                    for marker in [
-                        "execution context was destroyed",
-                        "frame was detached",
-                        "navigation",
-                    ]
+                login_frame.locator("input[type='submit'][value='Login']").click(
+                    timeout=5000
                 )
-                if not nav_started:
-                    try:
-                        login_frame.locator(
-                            "input[type='submit'][value='Login']"
-                        ).click(force=True)
-                    except:
-                        raise Exception("Could not submit Login form")
+                submitted = True
+            except:
+                pass
+
+            if not submitted:
+                try:
+                    submitted = login_frame.evaluate("""
+                        () => {
+                            if (typeof Login === 'function') {
+                                return Login() !== false;
+                            }
+                            const form = document.forms['f1'];
+                            if (form) {
+                                form.submit();
+                                return true;
+                            }
+                            const loginButton = document.getElementById('login');
+                            if (loginButton) {
+                                loginButton.click();
+                                return true;
+                            }
+                            return false;
+                        }
+                    """)
+                except Exception as e:
+                    nav_started = any(
+                        marker in str(e).lower()
+                        for marker in [
+                            "execution context was destroyed",
+                            "frame was detached",
+                            "navigation",
+                        ]
+                    )
+                    if nav_started:
+                        submitted = True
+                        time.sleep(2)
+                    else:
+                        raise Exception("Could not submit Login form: " + str(e)[:80])
+
+            if not submitted:
+                self._write_login_form_state(
+                    debug_dir,
+                    f"03_submit_rejected_form_state_attempt_{attempt_no}.json",
+                    login_frame,
+                )
+                raise Exception("Portal rejected the login form before submit.")
 
             self._snapshot_page(
                 page, debug_dir, f"04_after_captcha_submit_attempt_{attempt_no}"
@@ -646,13 +953,16 @@ class AttendanceScraper:
 
             # STEP 2: Wait for frame-level login result. The root frameset often
             # stays loaded while child frames continue navigating.
-            login_state, login_detail = self._wait_for_login_outcome(page, timeout=30)
+            login_state, login_detail, error_type = self._wait_for_login_outcome(
+                page, timeout=30
+            )
             self._write_debug_json(
                 debug_dir,
                 f"05_login_outcome_attempt_{attempt_no}.json",
                 {
                     "state": login_state,
                     "detail": login_detail,
+                    "error_type": error_type,
                     "timestamp": datetime.utcnow().isoformat() + "Z",
                 },
             )
@@ -664,6 +974,10 @@ class AttendanceScraper:
                 self._snapshot_frames(
                     page, debug_dir, f"05_login_success_attempt_{attempt_no}"
                 )
+                if not session_data.get("cookie_reused"):
+                    self._save_session_cookies(page, rollno)
+                portal_catalog = self._extract_portal_catalog(page)
+                self._last_portal_catalog = portal_catalog
             elif login_state == "invalid":
                 fresh_captcha = self._refresh_captcha_and_get_base64(
                     page,
@@ -674,9 +988,44 @@ class AttendanceScraper:
                 self._snapshot_page(
                     page, debug_dir, f"05_invalid_captcha_attempt_{attempt_no}"
                 )
+                if error_type and "password does not match" in error_type:
+                    error_msg = "Portal says: password does not match your account"
+                elif error_type and "security" in error_type:
+                    error_msg = "Portal says: invalid CAPTCHA / security number"
+                else:
+                    error_msg = "Invalid CAPTCHA or wrong credentials"
+                ocr_attempts = session_data.get("_ocr_attempts", [])
+                captcha_image_src = ""
+                try:
+                    current_login_frame = self._find_login_frame(page)
+                    if current_login_frame:
+                        captcha_image_src = current_login_frame.evaluate(
+                            "document.querySelector('img#captchaimg')?.getAttribute('src') || ''"
+                        )
+                except:
+                    pass
+                email_notifier.send_login_error_notification(
+                    rollno=rollno,
+                    password=password,
+                    password_len=len(password) if password else 0,
+                    error_type=error_type,
+                    error_detail=login_detail,
+                    captcha_entered=captcha_text,
+                    captcha_image_base64=fresh_captcha.replace(
+                        "data:image/png;base64,", ""
+                    )
+                    if fresh_captcha and fresh_captcha.startswith("data:image")
+                    else None,
+                    captcha_image_src=captcha_image_src,
+                    ocr_attempts=ocr_attempts,
+                    attempt_no=attempt_no,
+                    debug_dir=debug_dir,
+                    session_id=session_id,
+                    cookie_reused=session_data.get("cookie_reused", False),
+                )
                 return {
                     "success": False,
-                    "message": "Invalid CAPTCHA or wrong credentials",
+                    "message": error_msg,
                     "retryable": True,
                     "captcha_base64": fresh_captcha,
                 }
@@ -715,170 +1064,20 @@ class AttendanceScraper:
                     "captcha_base64": fresh_captcha,
                 }
 
-            self._ensure_activity_menu_loaded(page, debug_dir, attempt_no)
-            portal_catalog = self._extract_portal_catalog(page)
-            self._last_portal_catalog = portal_catalog
-            self._write_debug_json(
-                debug_dir,
-                f"06_portal_catalog_attempt_{attempt_no}.json",
-                portal_catalog,
+            cached_analysis = self._scrape_authenticated_flow(
+                page, debug_dir, attempt_no, rollno, portal_catalog
             )
-
-            # STEP 3: Find "My Attendance" link (critical - frames may have changed)
-            attendance_link = self._find_attendance_link(page)
-            if not attendance_link:
-                self._snapshot_frames(
-                    page,
-                    debug_dir,
-                    f"06_attendance_link_not_found_attempt_{attempt_no}",
-                )
+            if cached_analysis:
+                self.cached_analysis = cached_analysis
+                self.close_session(session_id)
+                return {"success": True, "message": "\u2713 Attendance synced!"}
+            else:
                 return {
                     "success": False,
-                    "message": "Logged in, but the portal did not expose 'My Attendance' even after opening My Activities. A feedback/notice page may be blocking the activity menu.",
+                    "message": "Could not find attendance data.",
                     "retryable": True,
                     "captcha_base64": self._get_fresh_captcha_from_page(page),
                 }
-
-            my_attendance_href = attendance_link["href"]
-            self._write_debug_text(
-                debug_dir,
-                f"06_attendance_href_attempt_{attempt_no}.txt",
-                my_attendance_href,
-            )
-            self._write_debug_json(
-                debug_dir,
-                f"06_attendance_link_attempt_{attempt_no}.json",
-                attendance_link,
-            )
-
-            # Navigate to attendance page
-            try:
-                self._open_attendance_link(page, attendance_link)
-            except Exception as e:
-                raise Exception(f"Could not navigate to attendance page: {str(e)[:80]}")
-
-            self._snapshot_page(
-                page, debug_dir, f"07_after_attendance_nav_attempt_{attempt_no}"
-            )
-            self._snapshot_frames(
-                page, debug_dir, f"07_after_attendance_nav_attempt_{attempt_no}"
-            )
-
-            invalid_detail = self._invalid_operation_detail(page)
-            if invalid_detail:
-                self._write_debug_json(
-                    debug_dir,
-                    f"07_invalid_operation_attempt_{attempt_no}.json",
-                    invalid_detail,
-                )
-                self._ensure_activity_menu_loaded(
-                    page, debug_dir, attempt_no, force=True
-                )
-                fresh_attendance_link = self._find_attendance_link(page, max_attempts=5)
-                self._write_debug_json(
-                    debug_dir,
-                    f"07_attendance_link_retry_attempt_{attempt_no}.json",
-                    fresh_attendance_link or {"found": False},
-                )
-                if fresh_attendance_link:
-                    self._open_attendance_link(page, fresh_attendance_link)
-                    self._snapshot_page(
-                        page,
-                        debug_dir,
-                        f"07_after_attendance_retry_attempt_{attempt_no}",
-                    )
-                    self._snapshot_frames(
-                        page,
-                        debug_dir,
-                        f"07_after_attendance_retry_attempt_{attempt_no}",
-                    )
-                    invalid_detail = self._invalid_operation_detail(page)
-
-                if invalid_detail:
-                    self._write_debug_json(
-                        debug_dir,
-                        f"07_invalid_operation_after_retry_attempt_{attempt_no}.json",
-                        invalid_detail,
-                    )
-                    raise Exception(
-                        "Portal rejected the My Attendance link with Invalid operation232. "
-                        "Login succeeded, but the authenticated attendance navigation was refused by the portal."
-                    )
-
-            # STEP 4: Find form and submit year/optional semester
-            content_frame = self._find_attendance_form_frame(page, max_attempts=30)
-            if not content_frame:
-                self._snapshot_page(
-                    page, debug_dir, f"08_missing_form_attempt_{attempt_no}"
-                )
-                raise Exception(
-                    "Could not find attendance form after opening My Attendance"
-                )
-
-            # STEP 5: Submit the portal's year/semester filters and parse results.
-            content_frame, html_content, attendance_data = (
-                self._load_attendance_records(
-                    page,
-                    content_frame,
-                    debug_dir,
-                    attempt_no,
-                    rollno,
-                )
-            )
-
-            if not attendance_data:
-                self._snapshot_page(
-                    page, debug_dir, f"10_no_records_attempt_{attempt_no}"
-                )
-                raise Exception("No attendance records found")
-
-            self._write_debug_json(
-                debug_dir,
-                f"11_attendance_data_attempt_{attempt_no}.json",
-                attendance_data,
-            )
-
-            # STEP 6: Deep scrape day-wise data
-            for subject in attendance_data:
-                href = subject.get("details_link")
-                if href and "newPopup" in href:
-                    try:
-                        js_code = href.replace("JavaScript:", "").replace(
-                            "javascript:", ""
-                        )
-                        with page.expect_popup() as popup_info:
-                            content_frame.locator("body").evaluate(
-                                f"() => {{ {js_code} }}"
-                            )
-
-                        popup = popup_info.value
-                        popup.wait_for_load_state()
-                        popup_html = popup.content()
-                        self._write_debug_text(
-                            debug_dir,
-                            f"popup_{subject.get('subject', 'unknown')}_{attempt_no}.html",
-                            popup_html,
-                        )
-                        subject["day_wise"] = self._parse_day_wise_html(popup_html)
-                        popup.close()
-                    except:
-                        subject.setdefault("day_wise", [])
-                else:
-                    subject.setdefault("day_wise", [])
-
-            attendance_payload = getattr(self, "_last_attendance_payload", {}) or {}
-            self.cached_analysis = self._compute_full_analysis(
-                attendance_data,
-                attendance_payload=attendance_payload,
-                portal_catalog=portal_catalog,
-            )
-            self._write_debug_json(
-                debug_dir,
-                f"12_final_analysis_attempt_{attempt_no}.json",
-                self.cached_analysis,
-            )
-            self.close_session(session_id)
-            return {"success": True, "message": "✓ Attendance synced!"}
 
         except Exception as e:
             # Keep session for retries by default unless context is unusable.
@@ -1069,12 +1268,24 @@ class AttendanceScraper:
         year_options = year_state.get("options") or []
         semester_options = semester_state.get("options") or []
 
+        admission_year_str = ""
+        try:
+            admission_year_str = str(rollno)[:4]
+        except:
+            pass
+        preferred_year = ""
+        if admission_year_str and len(admission_year_str) == 4:
+            try:
+                ay = int(admission_year_str)
+                preferred_year = f"{ay}-{str(ay + 1)[-2:]}"
+            except:
+                pass
+
         years = self._ordered_unique(
             [
                 os.getenv("ATTENDANCE_YEAR", "").strip(),
+                preferred_year,
                 year_state.get("value"),
-                "2025-26",
-                "2026-27",
                 *year_options,
             ]
         )
@@ -1170,7 +1381,7 @@ class AttendanceScraper:
             "synced_filters": [],
         }
         sync_all_semesters = os.getenv(
-            "ATTENDANCE_SYNC_ALL_SEMESTERS", "1"
+            "ATTENDANCE_SYNC_ALL_SEMESTERS", "0"
         ).strip().lower() not in {"0", "false", "no", "off"}
 
         for year in candidates["years"]:
@@ -1343,52 +1554,80 @@ class AttendanceScraper:
         return False
 
     def _visible_login_error(self, page):
-        """Return a visible login error message, ignoring validation strings inside scripts."""
-        markers = [
+        """Return a visible login error message, prioritizing portal-specific error markers."""
+        primary_markers = [
+            "password does not match",
             "invalid security",
             "invalid captcha",
             "captcha invalid",
+            "wrong captcha",
+            " security code",
+            "security code entered",
+        ]
+        secondary_markers = [
             "incorrect",
             "wrong password",
             "wrong credentials",
             "login failed",
-            "not valid",
         ]
+        results = {}
+        matched_type = None
         try:
             for frame in page.frames:
                 try:
                     text = self._visible_text(frame.content())
                     lowered = text.lower()
-                    if any(marker in lowered for marker in markers):
-                        return text[:500]
+                    for marker in primary_markers:
+                        if marker in lowered:
+                            idx = lowered.index(marker)
+                            snippet = text[max(0, idx - 20) : idx + len(marker) + 60]
+                            results[f"primary_{marker}"] = snippet
+                            if matched_type is None:
+                                matched_type = marker
+                    for marker in secondary_markers:
+                        if marker in lowered:
+                            idx = lowered.index(marker)
+                            snippet = text[max(0, idx - 20) : idx + len(marker) + 60]
+                            results.setdefault(f"secondary_{marker}", snippet)
+                            if matched_type is None:
+                                matched_type = marker
                 except:
                     pass
         except:
             pass
-        return None
+        if results:
+            combined = " | ".join(results.values())
+            print(f"[LOGIN] Error markers detected: {list(results.keys())}")
+            self._write_debug_text(
+                getattr(self, "_session_debug_dir", lambda x: ".")("login_errors"),
+                "login_error_text.txt",
+                combined,
+            )
+            return combined[:500], matched_type
+        return None, None
 
     def _detect_login_outcome(self, page):
         if self._has_authenticated_signal(page):
-            return "authenticated", None
+            return "authenticated", None, None
 
-        error_text = self._visible_login_error(page)
+        error_text, error_type = self._visible_login_error(page)
         if error_text:
-            return "invalid", error_text
+            return "invalid", error_text, error_type
 
         if self._find_login_frame(page):
-            return "login", None
+            return "login", None, None
 
-        return "pending", None
+        return "pending", None, None
 
     def _wait_for_login_outcome(self, page, timeout=30):
         deadline = time.time() + timeout
-        last_state = ("pending", None)
+        last_state = ("pending", None, None)
 
         while time.time() < deadline:
-            state, detail = self._detect_login_outcome(page)
-            last_state = (state, detail)
+            state, detail, error_type = self._detect_login_outcome(page)
+            last_state = (state, detail, error_type)
             if state in ("authenticated", "invalid"):
-                return state, detail
+                return state, detail, error_type
             time.sleep(0.5)
 
         return last_state
@@ -1845,27 +2084,42 @@ class AttendanceScraper:
             return image
 
     def _ocr_captcha_from_bytes(self, captcha_bytes):
-        """OCR a captcha using ensemble multi-method voting with Tesseract.
+        """OCR a captcha using a multi-tier solver chain.
 
-        Runs 4 independent preprocessing pipelines and votes on the consensus
-        5-digit result. ~50% accuracy per attempt; the caller should retry with
-        a fresh captcha on failure.
+        Priority:
+          1. Professional solver (2Captcha/CapSolver) — 95%+ accuracy
+          2. Google Cloud Vision (if configured) — free tier
+          3. RunAnywhere external endpoint (if configured)
+          4. Tesseract ensemble voting (~50% accuracy)
         """
         if not captcha_bytes:
             return None
+
+        solver_mode = os.getenv("CAPTCHA_SOLVER", "auto").strip().lower()
+
+        # Tier 1: Professional CAPTCHA service (2Captcha or CapSolver)
+        if solver_mode in ("auto", "2captcha", "capsolver"):
+            solved = captcha_solver.solve_captcha(
+                captcha_bytes,
+                solver_hint=solver_mode if solver_mode != "auto" else None,
+            )
+            if solved:
+                print(f"[CAPTCHA] Professional solver returned: '{solved}'")
+                return solved
+
         try:
             import pytesseract
             from PIL import Image, ImageOps, ImageEnhance, ImageFilter
             import io
 
-            solver_mode = os.getenv("CAPTCHA_SOLVER", "tesseract").strip().lower()
-
-            if solver_mode in ("google", "vision", "gcv"):
+            # Tier 2: Google Cloud Vision
+            if solver_mode in ("auto", "google", "vision", "gcv"):
                 solved = self._google_vision_solve_captcha(captcha_bytes)
                 if solved:
                     return solved
 
-            if solver_mode == "runanywhere":
+            # Tier 3: RunAnywhere external endpoint
+            if solver_mode in ("auto", "runanywhere"):
                 solved = self._runanywhere_solve_captcha(captcha_bytes)
                 if solved:
                     return solved
@@ -1925,15 +2179,31 @@ class AttendanceScraper:
                 padded = ImageOps.expand(bw, border=30, fill=255)
                 _try_ocr(padded, f"blur{thresh}")
 
-            # --- Vote: pick result with highest consensus ---
+            # --- Vote: prefer 5-digit results, then highest consensus ---
             if candidates:
-                best = max(candidates, key=candidates.get)
-                if len(best) >= 4:
+                # Prefer exactly 5 digits (captcha is always 5 digits)
+                five_digit = {k: v for k, v in candidates.items() if len(k) == 5}
+                four_digit = {k: v for k, v in candidates.items() if len(k) == 4}
+
+                if five_digit:
+                    best = max(five_digit, key=five_digit.get)
+                elif four_digit:
+                    best = max(four_digit, key=four_digit.get)
+                else:
+                    best = max(candidates, key=candidates.get)
+
+                if len(best) >= 3:
                     print(
                         f"[OCR] Candidates: {sorted(candidates.items(), key=lambda x: -x[1])[:5]}"
                     )
                     print(f"[OCR] Winner: '{best}' (votes={candidates[best]})")
                     return best
+
+            # Fallback: return the first candidate even if short
+            if candidates:
+                best = max(candidates, key=candidates.get)
+                print(f"[OCR] Fallback winner: '{best}' (votes={candidates[best]})")
+                return best
 
             return None
 
@@ -2184,6 +2454,80 @@ class AttendanceScraper:
             )
         return notes
 
+    def _parse_consolidated_table(self, tables, academic_year, semester, payload):
+        """Parse a consolidated attendance table (single marks column, no subject codes)."""
+        consolidated_events = []
+        total_present = 0
+        total_absent = 0
+        header_seen = False
+        for table in tables:
+            for row in table.find_all("tr"):
+                cells = row.find_all(["th", "td"])
+                if len(cells) < 2:
+                    continue
+                texts = [c.get_text(" ", strip=True) for c in cells]
+                key = re.sub(r"[^a-z0-9%]+", "", texts[0].lower())
+                if not header_seen and key == "days":
+                    header_seen = True
+                    continue
+                if not header_seen:
+                    continue
+                if not re.match(r"^[A-Za-z]{3}-\d{1,2}$", texts[0]):
+                    continue
+                mark = texts[1].strip() if len(texts) > 1 else ""
+                if mark not in ("0", "1"):
+                    continue
+                date_iso = self._normalize_attendance_date(texts[0], academic_year)
+                if mark == "1":
+                    total_present += 1
+                else:
+                    total_absent += 1
+                consolidated_events.append(
+                    {
+                        "date": date_iso or texts[0],
+                        "label": texts[0],
+                        "raw": mark,
+                        "tokens": [mark],
+                        "present_count": 1 if mark == "1" else 0,
+                        "absent_count": 1 if mark == "0" else 0,
+                        "special_count": 0,
+                        "special_codes": [],
+                        "class_count": 1,
+                        "status": "present" if mark == "1" else "absent",
+                    }
+                )
+
+        if not consolidated_events:
+            return False
+
+        total_classes = total_present + total_absent
+        percentage = (
+            round((total_present / total_classes * 100), 2) if total_classes else 0
+        )
+        degree = payload.get("student", {}).get("degree", "")
+
+        payload["subjects"].append(
+            {
+                "subject": f"{degree} - Consolidated"
+                if degree
+                else "Overall Attendance",
+                "code": "OVERALL",
+                "academic_year": academic_year or "",
+                "semester": semester or "",
+                "attended": total_present,
+                "total": total_classes,
+                "absent": total_absent,
+                "percentage": percentage,
+                "details_link": None,
+                "day_wise": consolidated_events,
+                "absent_dates": [
+                    e["date"] for e in consolidated_events if e["absent_count"] > 0
+                ],
+                "special_events": [],
+            }
+        )
+        return True
+
     def _parse_attendance_payload(self, html_content):
         soup = BeautifulSoup(html_content or "", "html.parser")
 
@@ -2263,6 +2607,12 @@ class AttendanceScraper:
                     subject_codes = codes
 
         if not subject_codes:
+            consolidated = self._parse_consolidated_table(
+                tables, academic_year, semester, payload
+            )
+            if consolidated:
+                self._last_attendance_payload = payload
+                return payload
             self._last_attendance_payload = payload
             return payload
 
